@@ -19,6 +19,8 @@ struct ContentView: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var controlsHidden = false
+    @State private var showWaves = false
+    @AppStorage(FineTape.spanKey) private var tapeSpan: Double = FineTape.defaultSpan
 
     var body: some View {
         GeometryReader { geo in
@@ -64,6 +66,7 @@ struct ContentView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        .sheet(isPresented: $showWaves) { WavesSheet() }
         .task { model.restoreLast() }
     }
 
@@ -95,30 +98,35 @@ struct ContentView: View {
         }
     }
 
-    /// Sideways: video edge to edge, controls along the bottom.
-    /// Tap the video to hide or show them.
+    /// Sideways: video edge to edge, controls in a thin band hugging the
+    /// bottom edge. Tap the video to hide or show them.
     private var landscapeLayout: some View {
         ZStack(alignment: .bottom) {
-            video.ignoresSafeArea()
+            video
             if !controlsHidden {
-                VStack(spacing: 6) {
+                VStack(spacing: 4) {
                     HStack(spacing: 14) {
                         openMenu
                         timeLabel
                         Spacer()
                         transport
                     }
-                    FineTape().frame(height: 58)
-                    OverviewStrip().frame(height: 42)
+                    .frame(height: 26)
+                    FineTape().frame(height: 44)
+                    OverviewStrip().frame(height: 34)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 8)
-                .padding(.bottom, 4)
+                .padding(.top, 6)
+                .padding(.bottom, 6)
+                .background(
+                    LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .center)
+                )
                 .transition(.opacity)
             }
         }
+        // Down into the home-bar area; the first swipe there won't leave the app.
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
+        .defersSystemGestures(on: .bottom)
     }
 
     private var video: some View {
@@ -155,13 +163,40 @@ struct ContentView: View {
     }
 
     private var timeLabel: some View {
-        Text("\(formatTime(model.currentTime)) / \(formatTime(model.duration, decimals: 0))")
+        Text(formatTime(model.currentTime))
             .font(.system(.callout, design: .monospaced))
             .foregroundStyle(.white)
     }
 
     private var transport: some View {
         HStack(spacing: 16) {
+            // Tap: mark a wave here. Hold: jump to a wave, or rename them.
+            Menu {
+                Button { model.markWave() } label: { Label("Mark wave here", systemImage: "flag") }
+                if !model.waves.isEmpty {
+                    Section {
+                        ForEach(model.waves) { wave in
+                            Button("\(wave.name)  ·  \(formatTime(wave.time, decimals: 0))") { model.jump(to: wave) }
+                        }
+                    }
+                    Button { showWaves = true } label: { Label("Rename or delete…", systemImage: "pencil") }
+                }
+            } label: {
+                Image(systemName: "flag.fill").font(.title3)
+            } primaryAction: {
+                model.markWave()
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+            // How much time the top bar spans.
+            Menu {
+                ForEach(FineTape.spanChoices, id: \.self) { span in
+                    Button(FineTape.spanLabel(span)) { tapeSpan = span }
+                }
+            } label: {
+                Text(FineTape.spanLabel(tapeSpan))
+                    .font(.system(.callout, design: .monospaced))
+                    .frame(minWidth: 40)
+            }
             Menu {
                 ForEach([0.1, 0.25, 0.5, 1, 2] as [Float], id: \.self) { r in
                     Button("\(rateLabel(r))×") { model.rate = r }
@@ -173,7 +208,7 @@ struct ContentView: View {
             }
             Button { model.togglePlay() } label: {
                 Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").font(.title2)
-                    .frame(width: 36)
+                    .frame(width: 36, height: 28)
             }
         }
     }
@@ -192,6 +227,44 @@ struct ContentView: View {
                 } else {
                     model.errorMessage = "Allow Photos access in Settings › WaveScrub."
                 }
+            }
+        }
+    }
+}
+
+/// Every wave marked on this video: rename by typing, swipe to delete,
+/// tap the arrow to go there.
+struct WavesSheet: View {
+    @EnvironmentObject private var model: PlayerModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(model.waves) { wave in
+                    HStack {
+                        TextField("Name", text: Binding(
+                            get: { wave.name },
+                            set: { model.renameWave(wave.id, to: $0) }
+                        ))
+                        Text(formatTime(wave.time, decimals: 0))
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Button {
+                            model.jump(to: wave)
+                            dismiss()
+                        } label: {
+                            Image(systemName: "arrow.right.circle.fill").font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .onDelete { model.deleteWaves(at: $0) }
+            }
+            .navigationTitle("Waves")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
     }

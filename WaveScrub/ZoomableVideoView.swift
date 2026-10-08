@@ -59,8 +59,16 @@ final class ZoomingPlayerView: UIScrollView, UIScrollViewDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Rotating the phone changes the size; start that view unzoomed.
-        if bounds.size != laidOutFor { relayout() }
+        // Rotating the phone changes the size a lot; start that view unzoomed.
+        // A nudge of a point or two (the controls around it re-laying out
+        // while playing) must leave the zoom exactly where it is.
+        let size = bounds.size
+        if abs(size.width - laidOutFor.width) > 40 || abs(size.height - laidOutFor.height) > 40 {
+            relayout()
+        } else if size != laidOutFor {
+            laidOutFor = size
+            centerContent()
+        }
     }
 
     /// Sizes the video to fit exactly, so zooming never pans into black bars.

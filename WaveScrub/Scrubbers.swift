@@ -2,9 +2,15 @@ import SwiftUI
 
 /// The whole video in one strip. Wherever your finger is, that's the moment
 /// shown — drag along it to sweep through the hour and find the wave.
+/// Marked waves are lines on it; passing over one snaps to its start.
 struct OverviewStrip: View {
     @EnvironmentObject private var model: PlayerModel
     @State private var dragging = false
+    @State private var snappedTo: Wave.ID?
+    private let haptics = UISelectionFeedbackGenerator()
+
+    /// How close, in points, the finger must come to a wave line to land on it.
+    private static let snapDistance: CGFloat = 10
 
     var body: some View {
         GeometryReader { geo in
@@ -29,6 +35,21 @@ struct OverviewStrip: View {
                 }
                 .opacity(0.75)
 
+                ForEach(model.waves) { wave in
+                    let wx = model.duration > 0 ? CGFloat(wave.time / model.duration) * width : 0
+                    Rectangle()
+                        .fill(Color.cyan)
+                        .frame(width: 2, height: height)
+                        .offset(x: wx - 1)
+                    Text(wave.name)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3)
+                        .background(Color.cyan.opacity(0.75), in: RoundedRectangle(cornerRadius: 3))
+                        .fixedSize()
+                        .offset(x: wx + 2, y: -height / 2 + 7)
+                }
+
                 let x = model.duration > 0 ? CGFloat(model.currentTime / model.duration) * width : 0
                 Rectangle()
                     .fill(Color.yellow)
@@ -42,42 +63,54 @@ struct OverviewStrip: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        if !dragging { dragging = true; model.beginScrub() }
-                        let fraction = min(max(0, value.location.x / width), 1)
-                        model.scrub(to: Double(fraction) * model.duration, precise: false)
+                        if !dragging { dragging = true; model.beginScrub(); haptics.prepare() }
+                        let fingerX = min(max(0, value.location.x), width)
+                        let secondsPerPoint = model.duration / Double(width)
+                        let near = model.waves.min {
+                            abs(waveX($0, width) - fingerX) < abs(waveX($1, width) - fingerX)
+                        }
+                        if let near, abs(waveX(near, width) - fingerX) <= Self.snapDistance {
+                            if snappedTo != near.id { snappedTo = near.id; haptics.selectionChanged() }
+                            model.scrub(to: near.time, tolerance: 0)
+                        } else {
+                            snappedTo = nil
+                            model.scrub(to: Double(fingerX) * secondsPerPoint, tolerance: secondsPerPoint)
+                        }
                     }
                     .onEnded { _ in
                         dragging = false
+                        snappedTo = nil
                         model.endScrub()
                     }
             )
         }
+    }
+
+    private func waveX(_ wave: Wave, _ width: CGFloat) -> CGFloat {
+        model.duration > 0 ? CGFloat(wave.time / model.duration) * width : 0
     }
 }
 
 /// A tape measure centred on the current frame. Drag it like film through a
 /// gate: slide left to go forward, right to go back. Pinch it to change how
 /// much time fits across — from 1 second (frame by frame) up to 10 minutes.
+/// The window button beside the play button sets the same thing.
 struct FineTape: View {
     @EnvironmentObject private var model: PlayerModel
-    @AppStorage("tapeSpan") private var span: Double = 6
+    @AppStorage(FineTape.spanKey) private var span: Double = FineTape.defaultSpan
     @State private var dragStartTime: Double?
     @State private var pinchStartSpan: Double?
 
+    static let spanKey = "tapeWindow"
+    static let defaultSpan = 5.0
     static let minSpan = 1.0
     static let maxSpan = 600.0
+    static let spanChoices: [Double] = [2, 5, 15, 30, 60, 120, 300, 600]
 
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            ZStack(alignment: .topLeading) {
-                Canvas { ctx, size in draw(ctx, size: size) }
-                Text("↔ \(Self.spanLabel(span)) · pinch to change")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .padding(.leading, 6)
-                    .padding(.top, 3)
-            }
+            Canvas { ctx, size in draw(ctx, size: size) }
             .background(Color.white.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
@@ -89,8 +122,12 @@ struct FineTape: View {
                             dragStartTime = model.currentTime
                             model.beginScrub()
                         }
-                        let seconds = Double(value.translation.width / width) * span
-                        model.scrub(to: dragStartTime! - seconds, precise: span <= 30)
+                        let secondsPerPoint = span / Double(width)
+                        let seconds = Double(value.translation.width) * secondsPerPoint
+                        // Up to 30 s across, every frame is exact; wider than that the
+                        // finger moves too fast to tell, so allow the nearby keyframe.
+                        model.scrub(to: dragStartTime! - seconds,
+                                    tolerance: span <= 30 ? 0 : secondsPerPoint * 2)
                     }
                     .onEnded { _ in
                         if dragStartTime != nil { model.endScrub() }
@@ -170,8 +207,11 @@ struct FineTape: View {
         return steps.first { $0 * pxPerSec >= 70 } ?? 600
     }
 
+    /// 5s, 30s, 2m, 2.5m.
     static func spanLabel(_ span: Double) -> String {
-        span < 60 ? String(format: "%.0f s", span) : String(format: "%.1f min", span / 60)
+        if span < 60 { return String(format: "%.0fs", span) }
+        let minutes = span / 60
+        return minutes == minutes.rounded() ? String(format: "%.0fm", minutes) : String(format: "%.1fm", minutes)
     }
 }
 

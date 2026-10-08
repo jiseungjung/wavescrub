@@ -3,6 +3,13 @@ import Combine
 import Photos
 import UIKit
 
+/// A marked wave: where it starts, and what you called it.
+struct Wave: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var time: Double
+}
+
 /// Owns the AVPlayer and everything the screens read about the open video.
 ///
 /// Videos are never copied: a Photos video is opened through PHImageManager,
@@ -21,12 +28,15 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var thumbnails: [UIImage?] = []
     @Published private(set) var loadingMessage: String?
+    @Published private(set) var waves: [Wave] = []
     @Published var errorMessage: String?
     @Published var rate: Float = 1 {
         didSet { player.defaultRate = rate; if isPlaying { player.rate = rate } }
     }
 
     private var asset: AVAsset?
+    /// Which video the waves belong to: the Photos id or the file's path.
+    private var videoKey: String?
     private var securityScopedURL: URL?
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
@@ -38,7 +48,7 @@ final class PlayerModel: ObservableObject {
     // drag never queues up hundreds of stale seeks.
     private var seekInFlight = false
     private var chaseTarget = CMTime.zero
-    private var chasePrecise = true
+    private var chaseTolerance = CMTime.zero
     private var chaseGeneration = 0
     private var scrubbing = false
 
@@ -99,7 +109,7 @@ final class PlayerModel: ObservableObject {
                 let defaults = UserDefaults.standard
                 defaults.set("photos", forKey: Keys.source)
                 defaults.set(id, forKey: Keys.photoID)
-                await self.load(avAsset, title: title, resumeAt: resumeAt)
+                await self.load(avAsset, title: title, key: "photo:" + id, resumeAt: resumeAt)
             }
         }
     }
@@ -113,7 +123,10 @@ final class PlayerModel: ObservableObject {
             defaults.set(bookmark, forKey: Keys.fileBookmark)
         }
         loadingMessage = "Opening…"
-        Task { await load(AVURLAsset(url: url), title: url.deletingPathExtension().lastPathComponent, resumeAt: resumeAt) }
+        Task {
+            await load(AVURLAsset(url: url), title: url.deletingPathExtension().lastPathComponent,
+                       key: "file:" + url.path, resumeAt: resumeAt)
+        }
     }
 
     /// Reopens whatever was open last time, at the same moment.
@@ -137,7 +150,7 @@ final class PlayerModel: ObservableObject {
         }
     }
 
-    private func load(_ asset: AVAsset, title: String, resumeAt: Double?) async {
+    private func load(_ asset: AVAsset, title: String, key: String, resumeAt: Double?) async {
         thumbnailGenerator?.cancelAllCGImageGeneration()
         player.pause()
         do {
@@ -156,6 +169,8 @@ final class PlayerModel: ObservableObject {
             self.duration = duration
             self.frameRate = fps
             self.videoSize = size
+            self.videoKey = key
+            self.waves = Self.loadWaves(key: key)
         } catch {
             loadingMessage = nil
             errorMessage = "Couldn't read that video."
@@ -165,7 +180,7 @@ final class PlayerModel: ObservableObject {
         currentTime = 0
         hasVideo = true
         loadingMessage = nil
-        if let resumeAt, resumeAt > 0, resumeAt < duration { seek(to: resumeAt, precise: true) }
+        if let resumeAt, resumeAt > 0, resumeAt < duration { seek(to: resumeAt, tolerance: 0) }
         generateThumbnails()
     }
 
@@ -212,7 +227,7 @@ final class PlayerModel: ObservableObject {
         if isPlaying {
             player.pause()
         } else {
-            if currentTime >= duration - 0.05 { seek(to: 0, precise: true) }
+            if currentTime >= duration - 0.05 { seek(to: 0, tolerance: 0) }
             player.defaultRate = rate
             player.play()
         }
@@ -225,23 +240,25 @@ final class PlayerModel: ObservableObject {
         player.pause()
     }
 
-    /// `precise` lands on the exact frame; otherwise the nearest keyframe,
-    /// which is what makes sweeping across an hour feel instant.
-    func scrub(to seconds: Double, precise: Bool) {
-        seek(to: seconds, precise: precise)
+    /// `tolerance` is how far, in seconds, the frame shown may be from the
+    /// finger. Zero lands on the exact frame; a few seconds lets the player
+    /// show the nearest keyframe instead, which is what makes sweeping across
+    /// an hour feel instant. Lifting the finger always lands exactly.
+    func scrub(to seconds: Double, tolerance: Double) {
+        seek(to: seconds, tolerance: tolerance)
     }
 
     func endScrub() {
         scrubbing = false
-        seek(to: currentTime, precise: true)
+        seek(to: currentTime, tolerance: 0)
         savePosition()
     }
 
-    private func seek(to seconds: Double, precise: Bool) {
+    private func seek(to seconds: Double, tolerance: Double) {
         let t = min(max(0, seconds), duration)
         currentTime = t
         chaseTarget = CMTime(seconds: t, preferredTimescale: 60000)
-        chasePrecise = precise
+        chaseTolerance = CMTime(seconds: tolerance, preferredTimescale: 600)
         chaseGeneration += 1
         if !seekInFlight { performChaseSeek() }
     }
@@ -249,8 +266,7 @@ final class PlayerModel: ObservableObject {
     private func performChaseSeek() {
         seekInFlight = true
         let generation = chaseGeneration
-        let tolerance = chasePrecise ? CMTime.zero : CMTime(seconds: 2, preferredTimescale: 600)
-        player.seek(to: chaseTarget, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
+        player.seek(to: chaseTarget, toleranceBefore: chaseTolerance, toleranceAfter: chaseTolerance) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 if generation == self.chaseGeneration {
@@ -260,6 +276,44 @@ final class PlayerModel: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: Waves
+
+    func markWave() {
+        guard hasVideo else { return }
+        let next = (waves.compactMap { Int($0.name.dropFirst("Wave ".count)) }.max() ?? 0) + 1
+        waves.append(Wave(name: "Wave \(next)", time: currentTime))
+        waves.sort { $0.time < $1.time }
+        saveWaves()
+    }
+
+    func renameWave(_ id: Wave.ID, to name: String) {
+        guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
+        waves[i].name = name
+        saveWaves()
+    }
+
+    func deleteWaves(at offsets: IndexSet) {
+        waves.remove(atOffsets: offsets)
+        saveWaves()
+    }
+
+    func jump(to wave: Wave) {
+        player.pause()
+        seek(to: wave.time, tolerance: 0)
+        savePosition()
+    }
+
+    private func saveWaves() {
+        guard let videoKey, let data = try? JSONEncoder().encode(waves) else { return }
+        UserDefaults.standard.set(data, forKey: "waves." + videoKey)
+    }
+
+    private static func loadWaves(key: String) -> [Wave] {
+        guard let data = UserDefaults.standard.data(forKey: "waves." + key),
+              let waves = try? JSONDecoder().decode([Wave].self, from: data) else { return [] }
+        return waves
     }
 
     private func savePosition() {
