@@ -7,6 +7,11 @@ on:
 permissions:
   contents: write
 
+# A newer push cancels an older build, so an old app can never be published over a new one.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-15
