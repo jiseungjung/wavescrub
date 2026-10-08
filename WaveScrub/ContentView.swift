@@ -98,11 +98,11 @@ struct ContentView: View {
         }
     }
 
-    /// Sideways: video edge to edge, controls in a thin band hugging the
-    /// bottom edge. Tap the video to hide or show them.
+    /// Sideways: video edge to edge, controls in a thin band just above the
+    /// home bar. Tap the video to hide or show them.
     private var landscapeLayout: some View {
         ZStack(alignment: .bottom) {
-            video
+            video.ignoresSafeArea()
             if !controlsHidden {
                 VStack(spacing: 4) {
                     HStack(spacing: 14) {
@@ -117,16 +117,13 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
-                .padding(.bottom, 6)
+                .padding(.bottom, 4)
                 .background(
                     LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .center)
                 )
                 .transition(.opacity)
             }
         }
-        // Down into the home-bar area; the first swipe there won't leave the app.
-        .ignoresSafeArea(.container, edges: [.top, .bottom])
-        .defersSystemGestures(on: .bottom)
     }
 
     private var video: some View {
@@ -187,11 +184,10 @@ struct ContentView: View {
                 model.markWave()
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
-            // How much time the top bar spans.
-            Menu {
-                ForEach(FineTape.spanChoices, id: \.self) { span in
-                    Button(FineTape.spanLabel(span)) { tapeSpan = span }
-                }
+            // How much time the top bar spans: tap to flip between finding the
+            // wave and watching it slowly.
+            Button {
+                tapeSpan = tapeSpan < 60 ? FineTape.searchSpan : FineTape.defaultSpan
             } label: {
                 Text(FineTape.spanLabel(tapeSpan))
                     .font(.system(.callout, design: .monospaced))
