@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild -project WaveScrub.xcodeproj -scheme WaveScrub \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -quiet build
+          test -d build/Build/Products/Release-iphoneos/WaveScrub.app
+
+      - name: Package .ipa
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/WaveScrub.app Payload/
+          zip -qry WaveScrub.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaveScrub-ipa
+          path: WaveScrub.ipa
+
+      - name: Publish as the "latest" release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest WaveScrub.ipa --title "WaveScrub (latest build)" --notes "Unsigned; sign and install with SideStore, AltStore or Sideloadly."
