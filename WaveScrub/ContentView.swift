@@ -166,7 +166,9 @@ struct ContentView: View {
     }
 
     private var transport: some View {
-        HStack(spacing: 16) {
+        // Every label is its own width (no padding frames), so the gaps
+        // between them are exactly the spacing and all equal.
+        HStack(spacing: 14) {
             // Tap: mark a wave here. Hold: jump to a wave, or rename them.
             Menu {
                 Button { model.markWave() } label: { Label("Mark wave here", systemImage: "flag") }
@@ -191,7 +193,6 @@ struct ContentView: View {
             } label: {
                 Text(FineTape.spanLabel(tapeSpan))
                     .font(.system(.callout, design: .monospaced))
-                    .frame(minWidth: 40)
             }
             Menu {
                 ForEach([0.1, 0.25, 0.5, 1, 2] as [Float], id: \.self) { r in
@@ -200,11 +201,10 @@ struct ContentView: View {
             } label: {
                 Text("\(rateLabel(model.rate))×")
                     .font(.system(.callout, design: .monospaced))
-                    .frame(minWidth: 44)
             }
             Button { model.togglePlay() } label: {
                 Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").font(.title2)
-                    .frame(width: 36, height: 28)
+                    .frame(width: 22, height: 28)
             }
         }
     }
