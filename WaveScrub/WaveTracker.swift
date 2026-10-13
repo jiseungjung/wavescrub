@@ -35,14 +35,21 @@ struct WaveTrack: Codable, Equatable {
 /// (they barely move), the rider on the wave before (further left, slower)
 /// and ripples near the camera (the tracker slides onto blue water).
 ///
-/// The ride is over at the first of four things:
+/// The tracker loses you when someone crosses you: it slides onto them and
+/// then freezes. So whenever it loses you, freezes, or its box holds no
+/// wetsuit-dark pixels, it looks for a dark moving shape where your speed says
+/// you should be by now, and picks you up from there.
 ///
-/// - the tracker says it has lost you (a wipeout),
-/// - nobody is inside the box any more (you went under the whitewater, and the
-///   tracker has slid onto the foam without noticing),
+/// The ride is over at the first of three things:
+///
+/// - you can't be picked back up for half a second (a wipeout, or gone under
+///   the whitewater: the box sits on foam with nothing dark in it),
 /// - you stop travelling left with the wave (you kicked out and are lying on
-///   your board — still in view, so neither of the others fires),
+///   your board, still in view),
 /// - you reach the left edge of the picture.
+///
+/// Apple's person finder was tried for the second case and almost never saw a
+/// rider this small, so it is not used.
 ///
 /// The numbers below were measured on three rides filmed in 4K: one kicked
 /// out, one swallowed by whitewater, one wiped out.
@@ -53,10 +60,14 @@ enum WaveTracker {
     static let longestRide = 45.0
     /// The tracker's own confidence, below which it has lost you…
     static let lostConfidence: Float = 0.3
-    /// …for this long in a row.
-    static let lostFor = 0.25
-    /// No person found in the box for this long means you've gone under.
-    static let goneFor = 1.2
+    /// Lost, and not picked back up, for this long: the ride is over.
+    static let lostFor = 0.5
+    /// Below this share of dark pixels the box holds no wetsuit: it is on
+    /// water or foam. A rider's box measured 15–35%.
+    static let emptyBox = 0.05
+    /// How far from where your speed puts you a shape may be, as a share of
+    /// the picture, to pick you back up.
+    static let searchReach = 0.05
     /// Over this many seconds, a rider travels well over a tenth of the
     /// picture; one who has kicked out barely moves at all.
     static let stallWindow = 2.5
@@ -116,12 +127,13 @@ enum WaveTracker {
 
         let sequence = VNSequenceRequestHandler()
         var last = VNDetectedObjectObservation(boundingBox: visionRect(seed))
+        var previous: CGRect?
+        var frozen = 0
+        var recent: [Luma] = []
         var times: [Double] = []
         var xs: [Double] = []
         var ys: [Double] = []
-        var lowSince: Double?
-        var lastSeen: Double?
-        var sightings = 0
+        var lostSince: Double?
         var end: Double?
         var reason = "the clip ran out"
 
@@ -129,49 +141,61 @@ enum WaveTracker {
             try Task.checkCancellation()
             let t = sample.presentationTimeStamp.seconds
             // The reader starts at the keyframe before; skip up to the start.
-            guard t >= seedTime - 0.5 / fps, let buffer = sample.imageBuffer else { continue }
+            guard t >= seedTime - 0.5 / fps, let buffer = sample.imageBuffer, let luma = Luma(buffer) else { continue }
+            recent.append(luma)
+            if recent.count > compareFrames + 1 { recent.removeFirst() }
 
             let request = VNTrackObjectRequest(detectedObjectObservation: last)
             request.trackingLevel = .accurate
             try sequence.perform([request], on: buffer, orientation: orientation)
-            guard let found = request.results?.first as? VNDetectedObjectObservation else { reason = "the tracker returned nothing"; break }
+            guard let found = request.results?.first as? VNDetectedObjectObservation else {
+                reason = "the tracker returned nothing"
+                break
+            }
             last = found
-            let box = topLeftRect(found.boundingBox)
+            var box = topLeftRect(found.boundingBox)
+            frozen = previous.map { abs($0.midX - box.midX) < 1e-6 && abs($0.midY - box.midY) < 1e-6 } == true ? frozen + 1 : 0
+            previous = box
+            let dark = luma.darkShare(in: box, orientation: orientation)
+            var note = "ok"
+
+            if found.confidence < lostConfidence || frozen >= 2 || dark < emptyBox {
+                note = found.confidence < lostConfidence ? "low" : frozen >= 2 ? "frozen" : "empty"
+                let guess = predicted(at: t, times: times, xs: xs, ys: ys)
+                if let guess, recent.count > compareFrames,
+                   let p = movingDarkShapes(now: luma, before: recent[0], orientation: orientation)
+                       .filter({ abs($0.x - guess.x) < searchReach && abs($0.y - guess.y) < searchReach })
+                       .min(by: { hypot($0.x - guess.x, $0.y - guess.y) < hypot($1.x - guess.x, $1.y - guess.y) }) {
+                    box = riderBox(at: p, picture: picture)
+                    last = VNDetectedObjectObservation(boundingBox: visionRect(box))
+                    previous = nil
+                    frozen = 0
+                    lostSince = nil
+                    note += "+found"
+                } else {
+                    if lostSince == nil { lostSince = t }
+                    if let since = lostSince, t - since >= lostFor {
+                        end = since
+                        reason = "lost you and couldn't pick you back up"
+                        log?(String(format: "frame,%.3f,%.4f,%.4f,%.3f,%.2f,%@", t, box.midX, box.midY, found.confidence, dark, note))
+                        break
+                    }
+                    // Until you're found again, carry on where your speed says.
+                    if let guess { box = riderBox(at: guess, picture: picture) }
+                }
+            } else {
+                lostSince = nil
+            }
+            log?(String(format: "frame,%.3f,%.4f,%.4f,%.3f,%.2f,%@", t, box.midX, box.midY, found.confidence, dark, note))
+
             let x = Double(box.midX)
             times.append(t)
             xs.append(x)
             ys.append(Double(box.midY))
 
-            // Five times a second, check there is still a person in the box.
-            // Only trusted once it has seen you a few times: a rider small or
-            // blurred enough to be missed from the start must not end at once.
-            var person = "-"
-            if times.count % 6 == 1 {
-                let seen = personInside(box, buffer: buffer, orientation: orientation)
-                person = seen ? "1" : "0"
-                if seen {
-                    lastSeen = t
-                    sightings += 1
-                }
-            }
-            log?(String(format: "frame,%.3f,%.4f,%.4f,%.3f,%@", t, x, box.midY, found.confidence, person))
-
-            if found.confidence < lostConfidence {
-                if lowSince == nil { lowSince = t }
-                if let since = lowSince, t - since >= lostFor { end = since; reason = "the tracker lost you"; break }
-            } else {
-                lowSince = nil
-            }
-
             if x < 0.015 { end = t; reason = "you reached the left edge"; break }
 
-            if sightings >= 3, let seen = lastSeen, t - seen > goneFor {
-                end = seen + 0.3
-                reason = "nobody in the box"
-                break
-            }
-
-            if t - seedTime >= stallWindow,
+            if lostSince == nil, t - seedTime >= stallWindow,
                let from = times.firstIndex(where: { $0 >= t - stallWindow }),
                xs[from] - x < stallDistance {
                 // End where you were furthest along, just as you turned off it.
@@ -235,6 +259,9 @@ enum WaveTracker {
             if frame == compareFrames {
                 guard let first, let now = Luma(buffer) else { return nil }
                 let boxes = movingDarkShapes(now: now, before: first, orientation: orientation)
+                    .filter { $0.x > rightEdge }
+                    .sorted { $0.x > $1.x }
+                    .prefix(8)
                     .map { riderBox(at: $0, picture: picture) }
                 shapes = (boxes, t)
                 candidates = boxes.map {
@@ -275,8 +302,7 @@ enum WaveTracker {
         return (shapes.boxes[best], shapes.time)
     }
 
-    /// Centers of dark shapes that changed between the two frames, rightmost
-    /// first, at most eight.
+    /// Centers of the dark shapes that changed between the two frames.
     private static func movingDarkShapes(now: Luma, before: Luma,
                                          orientation: CGImagePropertyOrientation) -> [CGPoint] {
         let w = now.width, h = now.height
@@ -318,9 +344,9 @@ enum WaveTracker {
             guard count >= smallest else { continue }
             let c = upright(CGPoint(x: (Double(sx) / Double(count) + 0.5) / Double(w),
                                     y: (Double(sy) / Double(count) + 0.5) / Double(h)), orientation)
-            if c.x > rightEdge { centers.append(c) }
+            centers.append(c)
         }
-        return Array(centers.sorted { $0.x > $1.x }.prefix(8))
+        return centers
     }
 
     /// A box the size of a surfer, centered on a point.
@@ -330,17 +356,15 @@ enum WaveTracker {
         return CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
     }
 
-    /// Whether the person finder sees anyone in and just around the box.
-    private static func personInside(_ box: CGRect, buffer: CVPixelBuffer,
-                                     orientation: CGImagePropertyOrientation) -> Bool {
-        let area = box.insetBy(dx: -box.width, dy: -box.height / 2)
-            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        guard !area.isNull, area.width > 0, area.height > 0 else { return false }
-        let request = VNDetectHumanRectanglesRequest()
-        request.upperBodyOnly = false
-        request.regionOfInterest = visionRect(area)
-        try? VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation).perform([request])
-        return !(request.results ?? []).isEmpty
+    /// Where your last second of travel puts you at time `t`.
+    private static func predicted(at t: Double, times: [Double], xs: [Double], ys: [Double]) -> CGPoint? {
+        guard let lastTime = times.last else { return nil }
+        let from = times.firstIndex { $0 >= lastTime - 1 } ?? 0
+        let span = lastTime - times[from]
+        let n = times.count - 1
+        let vx = span > 0.2 ? (xs[n] - xs[from]) / span : 0
+        let vy = span > 0.2 ? (ys[n] - ys[from]) / span : 0
+        return CGPoint(x: xs[n] + vx * (t - lastTime), y: ys[n] + vy * (t - lastTime))
     }
 
     private static func makeReader(asset: AVAsset, track: AVAssetTrack, from start: Double,
