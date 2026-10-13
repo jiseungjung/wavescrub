@@ -1,0 +1,40 @@
+name: Tracker lab
+
+# Runs the app's tracker on a Mac against the clips in the test-clips release,
+# so a change to it can be checked without installing the app.
+on:
+  push:
+    paths:
+      - WaveScrub/WaveTracker.swift
+      - tools/trackclip/**
+      - .github/workflows/tracker-lab.yml
+  workflow_dispatch:
+
+jobs:
+  track:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the test clips
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download test-clips --dir clips
+
+      - name: Build
+        run: swiftc -O WaveScrub/WaveTracker.swift tools/trackclip/main.swift -o trackclip
+
+      - name: Track each clip
+        run: |
+          mkdir out
+          for f in clips/*; do
+            name=$(basename "$f")
+            ./trackclip "$f" > "out/$name.csv" 2>&1 || true
+            echo "== $name"
+            grep -E '^(candidate|watched|seed|end|result|error)' "out/$name.csv"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracker-logs
+          path: out

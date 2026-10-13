@@ -27,9 +27,15 @@ struct WaveTrack: Codable, Equatable {
 /// Follows one surfer from a wave's bookmark to the end of their ride, on the
 /// phone, with Apple's own tracker. Nothing leaves the device.
 ///
-/// At the bookmark you are the one at the far right edge, about to take off,
-/// so that is who it picks unless you tapped someone. The ride is over at the
-/// first of four things:
+/// At the bookmark you are at the far right edge, about to take off. Apple's
+/// person finder can't see anyone that small in a whole 4K frame, so you are
+/// found the plain way: of the dark, moving shapes in the right fifth of the
+/// picture, the one that travels furthest left over the next second and a
+/// half while staying dark. That passes over paddlers waiting at the edge
+/// (they barely move), the rider on the wave before (further left, slower)
+/// and ripples near the camera (the tracker slides onto blue water).
+///
+/// The ride is over at the first of four things:
 ///
 /// - the tracker says it has lost you (a wipeout),
 /// - nobody is inside the box any more (you went under the whitewater, and the
@@ -57,35 +63,55 @@ enum WaveTracker {
     /// Less than this share of the picture's width, leftwards, over the window
     /// is a stop. The slowest stretch of a real ride measured about 3%.
     static let stallDistance = 0.015
-    /// How much of you, top to bottom, a box made from a tap covers.
-    static let tapBoxHeight = 0.045
+    /// How tall a surfer is, as a share of the picture's height, in the clips
+    /// measured. Sizes the box the tracker starts from.
+    static let riderHeight = 0.042
 
-    static func track(asset: AVAsset, from start: Double, tap: CGPoint?) async throws -> WaveTrack {
+    // Finding you at the bookmark.
+    /// Only shapes this far right are candidates.
+    static let rightEdge = 0.8
+    /// Brightness (0–255) below which a pixel is wetsuit, not water or foam.
+    static let darkLuma: UInt8 = 60
+    /// How much brighter or darker a pixel must get to count as moving.
+    static let movedLuma = 20
+    /// Frames between the two compared for movement.
+    static let compareFrames = 5
+    /// The smallest shape that can be a person, as a share of the picture.
+    static let smallestShape = 0.00007
+    /// How long each candidate is watched for.
+    static let watchFor = 1.5
+    /// Below this share of dark pixels, a candidate's box has slid onto water.
+    static let stillDark = 0.10
+
+    /// `log`, when given, receives one line per frame and the reason the ride
+    /// ended. Only the Mac test run uses it.
+    static func track(asset: AVAsset, from start: Double, tap: CGPoint?,
+                      log: ((String) -> Void)? = nil) async throws -> WaveTrack {
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
         let (natural, transform, rate) = try await videoTrack.load(.naturalSize, .preferredTransform, .nominalFrameRate)
         let fps = rate > 0 ? Double(rate) : 30
         let orientation = orientation(of: transform)
         let turned = CGRect(origin: .zero, size: natural).applying(transform)
-        let pictureSize = CGSize(width: abs(turned.width), height: abs(turned.height))
+        let picture = CGSize(width: abs(turned.width), height: abs(turned.height))
 
-        // The frame at the bookmark, the right way up, to find you in.
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        let (image, _) = try await generator.image(at: CMTime(seconds: start, preferredTimescale: 60000))
+        let seed: CGRect
+        let seedTime: Double
+        if let tap {
+            seed = riderBox(at: tap, picture: picture)
+            seedTime = start
+        } else {
+            guard let found = try findRider(asset: asset, track: videoTrack, start: start, fps: fps,
+                                            orientation: orientation, picture: picture, log: log) else {
+                log?("end,nobody at the bookmark")
+                throw Failure.nobodyAtBookmark
+            }
+            seed = found.0
+            seedTime = found.1
+        }
+        log?(String(format: "seed,%.3f,%.4f,%.4f", seedTime, seed.midX, seed.midY))
         try Task.checkCancellation()
-        guard let seed = seedBox(in: image, pictureSize: pictureSize, tap: tap) else { throw Failure.nobodyAtBookmark }
 
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-        ])
-        output.alwaysCopiesSampleData = false
-        reader.add(output)
-        reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
-                                       duration: CMTime(seconds: longestRide, preferredTimescale: 600))
-        guard reader.startReading() else { throw Failure.unreadable }
+        let (reader, output) = try makeReader(asset: asset, track: videoTrack, from: seedTime, seconds: longestRide)
         defer { reader.cancelReading() }
 
         let sequence = VNSequenceRequestHandler()
@@ -97,17 +123,18 @@ enum WaveTracker {
         var lastSeen: Double?
         var sightings = 0
         var end: Double?
+        var reason = "the clip ran out"
 
         while let sample = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
             let t = sample.presentationTimeStamp.seconds
-            // The reader starts at the keyframe before; skip up to the bookmark.
-            guard t >= start - 0.5 / fps, let buffer = sample.imageBuffer else { continue }
+            // The reader starts at the keyframe before; skip up to the start.
+            guard t >= seedTime - 0.5 / fps, let buffer = sample.imageBuffer else { continue }
 
             let request = VNTrackObjectRequest(detectedObjectObservation: last)
             request.trackingLevel = .accurate
             try sequence.perform([request], on: buffer, orientation: orientation)
-            guard let found = request.results?.first as? VNDetectedObjectObservation else { break }
+            guard let found = request.results?.first else { reason = "the tracker returned nothing"; break }
             last = found
             let box = topLeftRect(found.boundingBox)
             let x = Double(box.midX)
@@ -115,39 +142,48 @@ enum WaveTracker {
             xs.append(x)
             ys.append(Double(box.midY))
 
+            // Five times a second, check there is still a person in the box.
+            // Only trusted once it has seen you a few times: a rider small or
+            // blurred enough to be missed from the start must not end at once.
+            var person = "-"
+            if times.count % 6 == 1 {
+                let seen = personInside(box, buffer: buffer, orientation: orientation)
+                person = seen ? "1" : "0"
+                if seen {
+                    lastSeen = t
+                    sightings += 1
+                }
+            }
+            log?(String(format: "frame,%.3f,%.4f,%.4f,%.3f,%@", t, x, box.midY, found.confidence, person))
+
             if found.confidence < lostConfidence {
                 if lowSince == nil { lowSince = t }
-                if let since = lowSince, t - since >= lostFor { end = since; break }
+                if let since = lowSince, t - since >= lostFor { end = since; reason = "the tracker lost you"; break }
             } else {
                 lowSince = nil
             }
 
-            if x < 0.015 { end = t; break }
+            if x < 0.015 { end = t; reason = "you reached the left edge"; break }
 
-            // Five times a second, check there is still a person in the box.
-            // Only trusted once it has seen you a few times: a rider small or
-            // blurred enough to be missed from the start must not end at once.
-            if times.count % 6 == 1 {
-                if personInside(box, buffer: buffer, orientation: orientation) {
-                    lastSeen = t
-                    sightings += 1
-                } else if sightings >= 3, let seen = lastSeen, t - seen > goneFor {
-                    end = seen + 0.3
-                    break
-                }
+            if sightings >= 3, let seen = lastSeen, t - seen > goneFor {
+                end = seen + 0.3
+                reason = "nobody in the box"
+                break
             }
 
-            if t - start >= stallWindow,
+            if t - seedTime >= stallWindow,
                let from = times.firstIndex(where: { $0 >= t - stallWindow }),
                xs[from] - x < stallDistance {
                 // End where you were furthest along, just as you turned off it.
                 let furthest = (from..<xs.count).min { xs[$0] < xs[$1] } ?? from
                 end = min(t, times[furthest] + 0.5)
+                reason = "you stopped moving left"
                 break
             }
         }
         guard !times.isEmpty else { throw Failure.unreadable }
         let rideEnd = end ?? times[times.count - 1]
+        log?(String(format: "end,%@,%.3f", reason, rideEnd))
 
         // Half a second either side, so the zoom glides instead of shaking with
         // every wobble of the box.
@@ -166,44 +202,132 @@ enum WaveTracker {
 
     // MARK: Finding you at the bookmark
 
-    /// The person you tapped, or with no tap the one furthest right.
-    private static func seedBox(in image: CGImage, pictureSize: CGSize, tap: CGPoint?) -> CGRect? {
-        let found = people(in: image)
-        guard let tap else { return found.max { $0.midX < $1.midX } }
-        let near = found
-            .filter { $0.insetBy(dx: -$0.width / 2, dy: -$0.height / 2).contains(tap) }
-            .min { hypot($0.midX - tap.x, $0.midY - tap.y) < hypot($1.midX - tap.x, $1.midY - tap.y) }
-        if let near { return near }
-        let h = CGFloat(tapBoxHeight)
-        let w = h * pictureSize.height / max(1, pictureSize.width) * 0.9
-        return CGRect(x: tap.x - w / 2, y: tap.y - h / 2, width: w, height: h)
+    private struct Candidate {
+        var observation: VNDetectedObjectObservation
+        let startX: CGFloat
+        var x: CGFloat
+        var alive = true
     }
 
-    /// Everyone the person finder sees. A surfer is only a few dozen pixels
-    /// tall in a whole 4K frame, too small once the finder shrinks it, so it
-    /// also looks at six overlapping pieces of the frame, each one bigger.
-    private static func people(in image: CGImage) -> [CGRect] {
-        let w = CGFloat(image.width), h = CGFloat(image.height)
-        var tiles = [CGRect(x: 0, y: 0, width: 1, height: 1)]
-        for x in [0, 0.3, 0.6] as [CGFloat] {
-            for y in [0, 0.4] as [CGFloat] { tiles.append(CGRect(x: x, y: y, width: 0.4, height: 0.6)) }
+    /// The rider at the right edge, and the moment their box was taken.
+    private static func findRider(asset: AVAsset, track: AVAssetTrack, start: Double, fps: Double,
+                                  orientation: CGImagePropertyOrientation, picture: CGSize,
+                                  log: ((String) -> Void)?) throws -> (CGRect, Double)? {
+        let (reader, output) = try makeReader(asset: asset, track: track, from: start, seconds: watchFor + 1)
+        defer { reader.cancelReading() }
+
+        let sequence = VNSequenceRequestHandler()
+        var first: Luma?
+        var candidates: [Candidate] = []
+        var shapes: (boxes: [CGRect], time: Double)?
+        var frame = -1
+
+        while let sample = output.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            let t = sample.presentationTimeStamp.seconds
+            guard t >= start - 0.5 / fps, let buffer = sample.imageBuffer else { continue }
+            frame += 1
+            if frame == 0 {
+                first = Luma(buffer)
+                continue
+            }
+            if frame < compareFrames { continue }
+            if frame == compareFrames {
+                guard let first, let now = Luma(buffer) else { return nil }
+                let boxes = movingDarkShapes(now: now, before: first, orientation: orientation)
+                    .map { riderBox(at: $0, picture: picture) }
+                shapes = (boxes, t)
+                candidates = boxes.map {
+                    Candidate(observation: VNDetectedObjectObservation(boundingBox: visionRect($0)),
+                              startX: $0.midX, x: $0.midX)
+                }
+                for b in boxes { log?(String(format: "candidate,%.4f,%.4f", b.midX, b.midY)) }
+                continue
+            }
+            guard let shapes, !candidates.isEmpty else { return nil }
+            let checkDark = (frame - compareFrames) % 9 == 0
+            let luma = checkDark ? Luma(buffer) : nil
+            for i in candidates.indices where candidates[i].alive {
+                let request = VNTrackObjectRequest(detectedObjectObservation: candidates[i].observation)
+                request.trackingLevel = .accurate
+                guard (try? sequence.perform([request], on: buffer, orientation: orientation)) != nil,
+                      let next = request.results?.first else {
+                    candidates[i].alive = false
+                    continue
+                }
+                candidates[i].observation = next
+                let box = topLeftRect(next.boundingBox)
+                candidates[i].x = box.midX
+                if let luma, luma.darkShare(in: box, orientation: orientation) < stillDark {
+                    candidates[i].alive = false
+                }
+            }
+            if t - shapes.time >= watchFor { break }
         }
-        var boxes: [CGRect] = []
-        for tile in tiles {
-            let pixels = CGRect(x: tile.minX * w, y: tile.minY * h, width: tile.width * w, height: tile.height * h).integral
-            guard let piece = image.cropping(to: pixels) else { continue }
-            let request = VNDetectHumanRectanglesRequest()
-            request.upperBodyOnly = false
-            try? VNImageRequestHandler(cgImage: piece).perform([request])
-            for person in request.results ?? [] {
-                let b = topLeftRect(person.boundingBox)
-                boxes.append(CGRect(x: (pixels.minX + b.minX * pixels.width) / w,
-                                    y: (pixels.minY + b.minY * pixels.height) / h,
-                                    width: b.width * pixels.width / w,
-                                    height: b.height * pixels.height / h))
+        guard let shapes else { return nil }
+        for (i, c) in candidates.enumerated() {
+            log?(String(format: "watched,%ld,%.4f,%.4f,%@", i, c.startX, c.startX - c.x, c.alive ? "dark" : "dropped"))
+        }
+        let best = candidates.indices
+            .filter { candidates[$0].alive && candidates[$0].startX - candidates[$0].x > 0.01 }
+            .max { candidates[$0].startX - candidates[$0].x < candidates[$1].startX - candidates[$1].x }
+        guard let best else { return nil }
+        return (shapes.boxes[best], shapes.time)
+    }
+
+    /// Centers of dark shapes that changed between the two frames, rightmost
+    /// first, at most eight.
+    private static func movingDarkShapes(now: Luma, before: Luma,
+                                         orientation: CGImagePropertyOrientation) -> [CGPoint] {
+        let w = now.width, h = now.height
+        guard before.width == w, before.height == h else { return [] }
+        var mask = [Bool](repeating: false, count: w * h)
+        for i in 0..<(w * h) where now.values[i] < darkLuma
+            && abs(Int(now.values[i]) - Int(before.values[i])) > movedLuma {
+            mask[i] = true
+        }
+        // Grow each speck a little, so a body broken up by spray is one shape.
+        let r = 2
+        var grown = [Bool](repeating: false, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w where mask[y * w + x] {
+                for yy in max(0, y - r)...min(h - 1, y + r) {
+                    for xx in max(0, x - r)...min(w - 1, x + r) { grown[yy * w + xx] = true }
+                }
             }
         }
-        return boxes
+        var seen = [Bool](repeating: false, count: w * h)
+        let smallest = Int(smallestShape * Double(w * h))
+        var centers: [CGPoint] = []
+        for s in 0..<(w * h) where grown[s] && !seen[s] {
+            var stack = [s]
+            seen[s] = true
+            var count = 0, sx = 0, sy = 0
+            while let i = stack.popLast() {
+                count += 1
+                let x = i % w, y = i / w
+                sx += x
+                sy += y
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = x + dx, ny = y + dy
+                    guard nx >= 0, nx < w, ny >= 0, ny < h else { continue }
+                    let n = ny * w + nx
+                    if grown[n] && !seen[n] { seen[n] = true; stack.append(n) }
+                }
+            }
+            guard count >= smallest else { continue }
+            let c = upright(CGPoint(x: (Double(sx) / Double(count) + 0.5) / Double(w),
+                                    y: (Double(sy) / Double(count) + 0.5) / Double(h)), orientation)
+            if c.x > rightEdge { centers.append(c) }
+        }
+        return Array(centers.sorted { $0.x > $1.x }.prefix(8))
+    }
+
+    /// A box the size of a surfer, centered on a point.
+    private static func riderBox(at p: CGPoint, picture: CGSize) -> CGRect {
+        let h = CGFloat(riderHeight)
+        let w = h * picture.height / max(1, picture.width) * 0.9
+        return CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
     }
 
     /// Whether the person finder sees anyone in and just around the box.
@@ -217,6 +341,20 @@ enum WaveTracker {
         request.regionOfInterest = visionRect(area)
         try? VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation).perform([request])
         return !(request.results ?? []).isEmpty
+    }
+
+    private static func makeReader(asset: AVAsset, track: AVAssetTrack, from start: Double,
+                                   seconds: Double) throws -> (AVAssetReader, AVAssetReaderTrackOutput) {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        ])
+        output.alwaysCopiesSampleData = false
+        reader.add(output)
+        reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
+                                       duration: CMTime(seconds: seconds, preferredTimescale: 600))
+        guard reader.startReading() else { throw Failure.unreadable }
+        return (reader, output)
     }
 
     // MARK: Coordinates
@@ -238,5 +376,68 @@ enum WaveTracker {
         case (-1, 0, 0, -1): .down
         default: .up
         }
+    }
+
+    /// A point in the stored frame, as it sits in the picture you see.
+    fileprivate static func upright(_ p: CGPoint, _ o: CGImagePropertyOrientation) -> CGPoint {
+        switch o {
+        case .right: CGPoint(x: 1 - p.y, y: p.x)
+        case .left: CGPoint(x: p.y, y: 1 - p.x)
+        case .down: CGPoint(x: 1 - p.x, y: 1 - p.y)
+        default: p
+        }
+    }
+
+    /// A point in the picture you see, as it sits in the stored frame.
+    fileprivate static func stored(_ p: CGPoint, _ o: CGImagePropertyOrientation) -> CGPoint {
+        switch o {
+        case .right: CGPoint(x: p.y, y: 1 - p.x)
+        case .left: CGPoint(x: 1 - p.y, y: p.x)
+        case .down: CGPoint(x: 1 - p.x, y: 1 - p.y)
+        default: p
+        }
+    }
+}
+
+/// A frame's brightness, one value for every few pixels: plenty to tell a
+/// black wetsuit from blue water, and small enough to scan quickly.
+private struct Luma {
+    let width: Int
+    let height: Int
+    let values: [UInt8]
+
+    init?(_ buffer: CVPixelBuffer) {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard CVPixelBufferIsPlanar(buffer), let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+        let bw = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let bh = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let row = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let step = max(1, max(bw, bh) / 960)
+        let w = bw / step, h = bh / step
+        let p = base.assumingMemoryBound(to: UInt8.self)
+        var values = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            let line = p + y * step * row
+            for x in 0..<w { values[y * w + x] = line[x * step] }
+        }
+        width = w
+        height = h
+        self.values = values
+    }
+
+    /// The share of the box that is wetsuit-dark. The box is in the picture
+    /// you see; this frame is stored however the camera held it.
+    func darkShare(in box: CGRect, orientation: CGImagePropertyOrientation) -> Double {
+        let a = WaveTracker.stored(CGPoint(x: box.minX, y: box.minY), orientation)
+        let b = WaveTracker.stored(CGPoint(x: box.maxX, y: box.maxY), orientation)
+        let x0 = max(0, Int(min(a.x, b.x) * CGFloat(width))), x1 = min(width - 1, Int(max(a.x, b.x) * CGFloat(width)))
+        let y0 = max(0, Int(min(a.y, b.y) * CGFloat(height))), y1 = min(height - 1, Int(max(a.y, b.y) * CGFloat(height)))
+        guard x1 >= x0, y1 >= y0 else { return 0 }
+        var dark = 0
+        for y in y0...y1 {
+            for x in x0...x1 where values[y * width + x] < WaveTracker.darkLuma { dark += 1 }
+        }
+        return Double(dark) / Double((x1 - x0 + 1) * (y1 - y0 + 1))
     }
 }
