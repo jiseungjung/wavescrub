@@ -1,13 +1,67 @@
 import AVFoundation
 import Combine
 import Photos
+import SwiftUI
 import UIKit
 
-/// A marked wave: where it starts, and what you called it.
+/// A marked wave: where it starts, what you called it, and its color.
 struct Wave: Codable, Identifiable, Equatable {
     var id = UUID()
     var name: String
     var time: Double
+    var color: WaveColor = .cyan
+
+    enum CodingKeys: String, CodingKey { case id, name, time, color }
+
+    init(id: UUID = UUID(), name: String, time: Double, color: WaveColor = .cyan) {
+        self.id = id
+        self.name = name
+        self.time = time
+        self.color = color
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        time = try c.decode(Double.self, forKey: .time)
+        color = try c.decodeIfPresent(WaveColor.self, forKey: .color) ?? .cyan
+    }
+}
+
+/// A small, fixed set of flag colors — no color wheel.
+enum WaveColor: String, Codable, CaseIterable, Identifiable {
+    case red, orange, yellow, green, cyan, blue, purple, pink
+
+    var id: String { rawValue }
+
+    var color: Color {
+        switch self {
+        case .red: .red
+        case .orange: .orange
+        case .yellow: .yellow
+        case .green: .green
+        case .cyan: .cyan
+        case .blue: .blue
+        case .purple: .purple
+        case .pink: .pink
+        }
+    }
+
+    var name: String { rawValue.capitalized }
+}
+
+/// A previously opened video, kept so it can be reopened without copying it.
+struct RecentVideo: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable { case photo, file }
+
+    var id = UUID()
+    var title: String
+    var lastOpened: Date
+    var kind: Kind
+    var photoID: String?
+    var filePath: String?
+    var fileBookmark: Data?
 }
 
 /// Owns the AVPlayer and everything the screens read about the open video.
@@ -29,6 +83,8 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var thumbnails: [UIImage?] = []
     @Published private(set) var loadingMessage: String?
     @Published private(set) var waves: [Wave] = []
+    @Published var selectedWaveID: Wave.ID?
+    @Published private(set) var recents: [RecentVideo] = []
     @Published var errorMessage: String?
     @Published var rate: Float = 1 {
         didSet { player.defaultRate = rate; if isPlaying { player.rate = rate } }
@@ -57,6 +113,7 @@ final class PlayerModel: ObservableObject {
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         player.actionAtItemEnd = .pause
+        loadRecents()
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(value: 1, timescale: 30), queue: .main
         ) { [weak self] time in
@@ -97,6 +154,7 @@ final class PlayerModel: ObservableObject {
         let title = phAsset.creationDate.map {
             $0.formatted(date: .abbreviated, time: .shortened)
         } ?? "Video"
+        addRecent(title: title, kind: .photo, photoID: id, filePath: nil, fileBookmark: nil)
         PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { [weak self] avAsset, _, _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -121,12 +179,58 @@ final class PlayerModel: ObservableObject {
         if let bookmark = try? url.bookmarkData() {
             defaults.set("file", forKey: Keys.source)
             defaults.set(bookmark, forKey: Keys.fileBookmark)
+            addRecent(title: url.deletingPathExtension().lastPathComponent, kind: .file,
+                      photoID: nil, filePath: url.path, fileBookmark: bookmark)
         }
         loadingMessage = "Opening…"
         Task {
             await load(AVURLAsset(url: url), title: url.deletingPathExtension().lastPathComponent,
                        key: "file:" + url.path, resumeAt: resumeAt)
         }
+    }
+
+    /// Reopens a previously opened video in place; nothing was ever copied.
+    func openRecent(_ recent: RecentVideo) {
+        switch recent.kind {
+        case .photo:
+            guard let id = recent.photoID else { return }
+            openPhotoAsset(id: id)
+        case .file:
+            guard let data = recent.fileBookmark else { return }
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale) else {
+                errorMessage = "That file can't be found anymore."
+                removeRecent(recent.id)
+                return
+            }
+            openFile(url)
+        }
+    }
+
+    func removeRecent(_ id: RecentVideo.ID) {
+        recents.removeAll { $0.id == id }
+        saveRecents()
+    }
+
+    private func addRecent(title: String, kind: RecentVideo.Kind, photoID: String?, filePath: String?, fileBookmark: Data?) {
+        recents.removeAll {
+            $0.kind == kind && (kind == .photo ? $0.photoID == photoID : $0.filePath == filePath)
+        }
+        recents.insert(RecentVideo(title: title, lastOpened: Date(), kind: kind,
+                                    photoID: photoID, filePath: filePath, fileBookmark: fileBookmark), at: 0)
+        if recents.count > 20 { recents.removeLast(recents.count - 20) }
+        saveRecents()
+    }
+
+    private func saveRecents() {
+        guard let data = try? JSONEncoder().encode(recents) else { return }
+        UserDefaults.standard.set(data, forKey: Keys.recents)
+    }
+
+    private func loadRecents() {
+        guard let data = UserDefaults.standard.data(forKey: Keys.recents),
+              let list = try? JSONDecoder().decode([RecentVideo].self, from: data) else { return }
+        recents = list
     }
 
     /// Reopens whatever was open last time, at the same moment.
@@ -171,6 +275,7 @@ final class PlayerModel: ObservableObject {
             self.videoSize = size
             self.videoKey = key
             self.waves = Self.loadWaves(key: key)
+            self.selectedWaveID = nil
         } catch {
             loadingMessage = nil
             errorMessage = "Couldn't read that video."
@@ -237,6 +342,7 @@ final class PlayerModel: ObservableObject {
 
     func beginScrub() {
         scrubbing = true
+        selectedWaveID = nil
         player.pause()
     }
 
@@ -252,6 +358,8 @@ final class PlayerModel: ObservableObject {
         scrubbing = false
         seek(to: currentTime, tolerance: 0)
         savePosition()
+        let frame = 1 / frameRate
+        selectedWaveID = waves.first { abs($0.time - currentTime) < frame }?.id
     }
 
     private func seek(to seconds: Double, tolerance: Double) {
@@ -283,15 +391,30 @@ final class PlayerModel: ObservableObject {
     func markWave() {
         guard hasVideo else { return }
         let next = (waves.compactMap { Int($0.name.dropFirst("Wave ".count)) }.max() ?? 0) + 1
-        waves.append(Wave(name: "Wave \(next)", time: currentTime))
+        let wave = Wave(name: "Wave \(next)", time: currentTime, color: lastWaveColor)
+        waves.append(wave)
         waves.sort { $0.time < $1.time }
         saveWaves()
+        selectedWaveID = wave.id
     }
 
     func renameWave(_ id: Wave.ID, to name: String) {
         guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
         waves[i].name = name
         saveWaves()
+    }
+
+    func setColor(_ id: Wave.ID, to color: WaveColor) {
+        guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
+        waves[i].color = color
+        saveWaves()
+        lastWaveColor = color
+    }
+
+    func deleteWave(_ id: Wave.ID) {
+        waves.removeAll { $0.id == id }
+        saveWaves()
+        if selectedWaveID == id { selectedWaveID = nil }
     }
 
     func deleteWaves(at offsets: IndexSet) {
@@ -303,6 +426,13 @@ final class PlayerModel: ObservableObject {
         player.pause()
         seek(to: wave.time, tolerance: 0)
         savePosition()
+        selectedWaveID = wave.id
+    }
+
+    /// Which color a newly marked wave gets: whatever was last picked.
+    private var lastWaveColor: WaveColor {
+        get { WaveColor(rawValue: UserDefaults.standard.string(forKey: Keys.lastWaveColor) ?? "") ?? .cyan }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Keys.lastWaveColor) }
     }
 
     private func saveWaves() {
@@ -326,5 +456,7 @@ final class PlayerModel: ObservableObject {
         static let photoID = "lastPhotoID"
         static let fileBookmark = "lastFileBookmark"
         static let time = "lastTime"
+        static let recents = "recentVideos"
+        static let lastWaveColor = "lastWaveColor"
     }
 }

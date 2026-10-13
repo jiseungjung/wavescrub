@@ -38,14 +38,14 @@ struct OverviewStrip: View {
                 ForEach(model.waves) { wave in
                     let wx = model.duration > 0 ? CGFloat(wave.time / model.duration) * width : 0
                     Rectangle()
-                        .fill(Color.cyan)
+                        .fill(wave.color.color)
                         .frame(width: 2, height: height)
                         .offset(x: wx - 1)
                     Text(wave.name)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 3)
-                        .background(Color.cyan.opacity(0.75), in: RoundedRectangle(cornerRadius: 3))
+                        .background(wave.color.color.opacity(0.75), in: RoundedRectangle(cornerRadius: 3))
                         .fixedSize()
                         .offset(x: wx + 2, y: -height / 2 + 7)
                 }
