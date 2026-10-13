@@ -26,6 +26,7 @@ struct WaveLoopView: View {
             FollowingVideoView(
                 player: loop.player,
                 videoSize: model.videoSize,
+                orientation: model.videoOrientation,
                 track: picking ? nil : track,
                 zoom: zoom,
                 onTap: picking ? { point in pick(point) } : nil,
@@ -246,6 +247,7 @@ final class LoopPlayer: ObservableObject {
 struct FollowingVideoView: UIViewRepresentable {
     let player: AVPlayer
     let videoSize: CGSize
+    let orientation: CGImagePropertyOrientation
     let track: WaveTrack?
     let zoom: Double
     var onTap: ((CGPoint) -> Void)?
@@ -258,6 +260,7 @@ struct FollowingVideoView: UIViewRepresentable {
 
     func updateUIView(_ view: FollowingPlayerView, context: Context) {
         view.videoSize = videoSize
+        view.orientation = orientation
         view.track = track
         view.zoom = zoom
         view.onTap = onTap
@@ -273,6 +276,7 @@ final class FollowingPlayerView: UIView {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var displayLink: CADisplayLink?
     var videoSize: CGSize = .zero
+    var orientation: CGImagePropertyOrientation = .up
     var track: WaveTrack?
     var zoom: Double = 1
     var onTap: ((CGPoint) -> Void)?
@@ -348,11 +352,9 @@ final class FollowingPlayerView: UIView {
         var shownAt = CMTime.zero
         guard let buffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &shownAt) else { return }
 
-        // Frames arrive as the camera stored them; a phone held upright stores
-        // them on their side.
-        var image = CIImage(cvPixelBuffer: buffer)
-        let sideways = (image.extent.width > image.extent.height) != (videoSize.width > videoSize.height)
-        if sideways { image = image.oriented(.right) }
+        // Frames arrive as the camera stored them: on their side for a phone
+        // held upright, upside down for one turned the other way.
+        let image = CIImage(cvPixelBuffer: buffer).oriented(orientation)
         let w = image.extent.width, h = image.extent.height
 
         // What part of the picture to show, as fractions of it, from the top-left.

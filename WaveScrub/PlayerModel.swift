@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import ImageIO
 import Photos
 import SwiftUI
 import UIKit
@@ -79,6 +80,8 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var frameRate: Double = 30
     @Published private(set) var videoSize: CGSize = .zero
+    /// How the camera stored the frames relative to how they're watched.
+    @Published private(set) var videoOrientation: CGImagePropertyOrientation = .up
     @Published private(set) var isPlaying = false
     @Published private(set) var thumbnails: [UIImage?] = []
     @Published private(set) var loadingMessage: String?
@@ -282,11 +285,18 @@ final class PlayerModel: ObservableObject {
             let duration = try await asset.load(.duration).seconds
             var fps = 30.0
             var size = CGSize.zero
+            var orientation = CGImagePropertyOrientation.up
             if let track = try await asset.loadTracks(withMediaType: .video).first {
                 let (rate, natural, transform) = try await track.load(.nominalFrameRate, .naturalSize, .preferredTransform)
                 if rate > 0 { fps = Double(rate) }
                 let r = CGRect(origin: .zero, size: natural).applying(transform)
                 size = CGSize(width: abs(r.width), height: abs(r.height))
+                switch (transform.a.rounded(), transform.b.rounded(), transform.c.rounded(), transform.d.rounded()) {
+                case (0, 1, -1, 0): orientation = .right
+                case (0, -1, 1, 0): orientation = .left
+                case (-1, 0, 0, -1): orientation = .down
+                default: orientation = .up
+                }
             }
             guard duration.isFinite, duration > 0 else { throw CocoaError(.fileReadCorruptFile) }
             self.asset = asset
@@ -294,6 +304,7 @@ final class PlayerModel: ObservableObject {
             self.duration = duration
             self.frameRate = fps
             self.videoSize = size
+            self.videoOrientation = orientation
             self.videoKey = key
             self.waves = Self.loadWaves(key: key)
             self.tracks = Self.loadTracks(key: key)
