@@ -12,6 +12,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jiseungjung.wavescrub
         SWIFT_VERSION: "5.0"
+        # Optimized even when run from Xcode: following a surfer through every
+        # frame is far too slow in an unoptimized build.
+        SWIFT_OPTIMIZATION_LEVEL: "-O"
         TARGETED_DEVICE_FAMILY: "1"
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"

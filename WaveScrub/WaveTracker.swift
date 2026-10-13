@@ -100,10 +100,14 @@ enum WaveTracker {
                       log: ((String) -> Void)? = nil) async throws -> WaveTrack {
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
         let (natural, transform, rate) = try await videoTrack.load(.naturalSize, .preferredTransform, .nominalFrameRate)
+        let duration = try await asset.load(.duration)
         let fps = rate > 0 ? Double(rate) : 30
-        let orientation = orientation(of: transform)
         let turned = CGRect(origin: .zero, size: natural).applying(transform)
         let picture = CGSize(width: abs(turned.width), height: abs(turned.height))
+        let frames = Frames(asset: asset, track: videoTrack, transform: transform, picture: picture,
+                            fps: fps, duration: duration)
+        // Frames arrive already turned the right way up.
+        let orientation = CGImagePropertyOrientation.up
 
         let seed: CGRect
         let seedTime: Double
@@ -111,8 +115,7 @@ enum WaveTracker {
             seed = riderBox(at: tap, picture: picture)
             seedTime = start
         } else {
-            guard let found = try findRider(asset: asset, track: videoTrack, start: start, fps: fps,
-                                            orientation: orientation, picture: picture, log: log) else {
+            guard let found = try findRider(frames, start: start, orientation: orientation, log: log) else {
                 log?("end,nobody at the bookmark")
                 throw Failure.nobodyAtBookmark
             }
@@ -122,7 +125,7 @@ enum WaveTracker {
         log?(String(format: "seed,%.3f,%.4f,%.4f", seedTime, seed.midX, seed.midY))
         try Task.checkCancellation()
 
-        let (reader, output) = try makeReader(asset: asset, track: videoTrack, from: seedTime, seconds: longestRide)
+        let (reader, output) = try frames.reader(from: seedTime, seconds: longestRide)
         defer { reader.cancelReading() }
 
         let sequence = VNSequenceRequestHandler()
@@ -234,10 +237,10 @@ enum WaveTracker {
     }
 
     /// The rider at the right edge, and the moment their box was taken.
-    private static func findRider(asset: AVAsset, track: AVAssetTrack, start: Double, fps: Double,
-                                  orientation: CGImagePropertyOrientation, picture: CGSize,
+    private static func findRider(_ frames: Frames, start: Double, orientation: CGImagePropertyOrientation,
                                   log: ((String) -> Void)?) throws -> (CGRect, Double)? {
-        let (reader, output) = try makeReader(asset: asset, track: track, from: start, seconds: watchFor + 1)
+        let fps = frames.fps, picture = frames.picture
+        let (reader, output) = try frames.reader(from: start, seconds: watchFor + 1)
         defer { reader.cancelReading() }
 
         let sequence = VNSequenceRequestHandler()
@@ -313,7 +316,7 @@ enum WaveTracker {
             mask[i] = true
         }
         // Grow each speck a little, so a body broken up by spray is one shape.
-        let r = 2
+        let r = 1
         var grown = [Bool](repeating: false, count: w * h)
         for y in 0..<h {
             for x in 0..<w where mask[y * w + x] {
@@ -367,18 +370,44 @@ enum WaveTracker {
         return CGPoint(x: xs[n] + vx * (t - lastTime), y: ys[n] + vy * (t - lastTime))
     }
 
-    private static func makeReader(asset: AVAsset, track: AVAssetTrack, from start: Double,
-                                   seconds: Double) throws -> (AVAssetReader, AVAssetReaderTrackOutput) {
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-        ])
-        output.alwaysCopiesSampleData = false
-        reader.add(output)
-        reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
-                                       duration: CMTime(seconds: seconds, preferredTimescale: 600))
-        guard reader.startReading() else { throw Failure.unreadable }
-        return (reader, output)
+    /// Reads the video at about 1080 lines instead of 4K, turned upright on
+    /// the way. Tracking a 4K frame took over a minute for a 15-second ride;
+    /// a rider is still fifty pixels tall at this size, plenty to follow.
+    struct Frames {
+        let asset: AVAsset
+        let track: AVAssetTrack
+        let transform: CGAffineTransform
+        let picture: CGSize
+        let fps: Double
+        let duration: CMTime
+
+        static let lines: CGFloat = 1080
+
+        func reader(from start: Double, seconds: Double) throws -> (AVAssetReader, AVAssetReaderVideoCompositionOutput) {
+            let scale = min(1, Self.lines / max(1, min(picture.width, picture.height)))
+            let composition = AVMutableVideoComposition()
+            composition.renderSize = CGSize(width: (picture.width * scale / 2).rounded() * 2,
+                                            height: (picture.height * scale / 2).rounded() * 2)
+            composition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps.rounded())))
+            let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+            layer.setTransform(transform.concatenating(CGAffineTransform(scaleX: scale, y: scale)), at: .zero)
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+            instruction.layerInstructions = [layer]
+            composition.instructions = [instruction]
+
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderVideoCompositionOutput(videoTracks: [track], videoSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ])
+            output.videoComposition = composition
+            output.alwaysCopiesSampleData = false
+            reader.add(output)
+            reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
+                                           duration: CMTime(seconds: seconds, preferredTimescale: 600))
+            guard reader.startReading() else { throw Failure.unreadable }
+            return (reader, output)
+        }
     }
 
     // MARK: Coordinates
@@ -390,16 +419,6 @@ enum WaveTracker {
 
     private static func topLeftRect(_ r: CGRect) -> CGRect {
         CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height)
-    }
-
-    /// Which way up the stored frames are, so Vision sees them as you filmed.
-    private static func orientation(of t: CGAffineTransform) -> CGImagePropertyOrientation {
-        switch (t.a.rounded(), t.b.rounded(), t.c.rounded(), t.d.rounded()) {
-        case (0, 1, -1, 0): .right
-        case (0, -1, 1, 0): .left
-        case (-1, 0, 0, -1): .down
-        default: .up
-        }
     }
 
     /// A point in the stored frame, as it sits in the picture you see.
@@ -433,17 +452,24 @@ private struct Luma {
     init?(_ buffer: CVPixelBuffer) {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        guard CVPixelBufferIsPlanar(buffer), let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
-        let bw = CVPixelBufferGetWidthOfPlane(buffer, 0)
-        let bh = CVPixelBufferGetHeightOfPlane(buffer, 0)
-        let row = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
-        let step = max(1, max(bw, bh) / 960)
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA,
+              let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let bw = CVPixelBufferGetWidth(buffer)
+        let bh = CVPixelBufferGetHeight(buffer)
+        let row = CVPixelBufferGetBytesPerRow(buffer)
+        let step = max(1, max(bw, bh) / 480)
         let w = bw / step, h = bh / step
         let p = base.assumingMemoryBound(to: UInt8.self)
         var values = [UInt8](repeating: 0, count: w * h)
-        for y in 0..<h {
-            let line = p + y * step * row
-            for x in 0..<w { values[y * w + x] = line[x * step] }
+        values.withUnsafeMutableBufferPointer { out in
+            for y in 0..<h {
+                let line = p + y * step * row
+                for x in 0..<w {
+                    let px = line + x * step * 4
+                    // Blue, green, red: weighted as the eye sees brightness.
+                    out[y * w + x] = UInt8((Int(px[0]) * 29 + Int(px[1]) * 150 + Int(px[2]) * 77) >> 8)
+                }
+            }
         }
         width = w
         height = h

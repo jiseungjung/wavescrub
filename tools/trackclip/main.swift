@@ -9,12 +9,14 @@ guard CommandLine.arguments.count > 1 else {
     exit(1)
 }
 let asset = AVURLAsset(url: URL(fileURLWithPath: CommandLine.arguments[1]))
+let began = Date()
 do {
     let track = try await WaveTracker.track(asset: asset, from: 0, tap: nil) { print($0) }
     for (i, x) in track.xs.enumerated() {
         print(String(format: "point,%.3f,%.4f,%.4f", track.start + Double(i) * track.step, x, track.ys[i]))
     }
-    print(String(format: "result,%.3f,%.3f,%.4f", track.start, track.end, track.height))
+    print(String(format: "result,%.3f,%.3f,%.4f,took %.1fs", track.start, track.end, track.height,
+                 Date().timeIntervalSince(began)))
 } catch {
     print("error,\(error)")
 }
