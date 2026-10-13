@@ -134,7 +134,7 @@ enum WaveTracker {
             let request = VNTrackObjectRequest(detectedObjectObservation: last)
             request.trackingLevel = .accurate
             try sequence.perform([request], on: buffer, orientation: orientation)
-            guard let found = request.results?.first else { reason = "the tracker returned nothing"; break }
+            guard let found = request.results?.first as? VNDetectedObjectObservation else { reason = "the tracker returned nothing"; break }
             last = found
             let box = topLeftRect(found.boundingBox)
             let x = Double(box.midX)
@@ -251,7 +251,7 @@ enum WaveTracker {
                 let request = VNTrackObjectRequest(detectedObjectObservation: candidates[i].observation)
                 request.trackingLevel = .accurate
                 guard (try? sequence.perform([request], on: buffer, orientation: orientation)) != nil,
-                      let next = request.results?.first else {
+                      let next = request.results?.first as? VNDetectedObjectObservation else {
                     candidates[i].alive = false
                     continue
                 }
