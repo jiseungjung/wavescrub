@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var controlsHidden = false
+    @State private var showLoops = false
     @State private var renamingWave: Wave?
     @State private var renameText = ""
     @AppStorage(FineTape.spanKey) private var tapeSpan: Double = FineTape.defaultSpan
@@ -59,6 +60,11 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
+        .fullScreenCover(isPresented: $showLoops) {
+            WaveLoopView()
+                .environmentObject(model)
+                .preferredColorScheme(.dark)
+        }
         .alert("Can't open video", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -85,8 +91,9 @@ struct ContentView: View {
     /// Upright: video on top, both scrubbers big underneath for your thumb.
     private var portraitLayout: some View {
         VStack(spacing: 10) {
-            HStack {
+            HStack(spacing: 18) {
                 openMenu
+                loopButton
                 Spacer()
                 Text(model.title).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -118,6 +125,7 @@ struct ContentView: View {
                 VStack(spacing: 4) {
                     HStack(spacing: 14) {
                         openMenu
+                        loopButton
                         timeLabel
                         Spacer()
                         transport
@@ -188,6 +196,14 @@ struct ContentView: View {
         } label: {
             Image(systemName: "film.stack").font(.title3)
         }
+    }
+
+    /// Opens the screen that loops each marked wave, following you.
+    private var loopButton: some View {
+        Button { showLoops = true } label: {
+            Image(systemName: "repeat").font(.title3)
+        }
+        .disabled(model.waves.isEmpty)
     }
 
     private var timeLabel: some View {

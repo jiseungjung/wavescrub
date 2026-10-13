@@ -86,11 +86,28 @@ final class PlayerModel: ObservableObject {
     @Published var selectedWaveID: Wave.ID?
     @Published private(set) var recents: [RecentVideo] = []
     @Published var errorMessage: String?
+    /// Where you are through each wave, keyed by the wave, once worked out.
+    @Published private(set) var tracks: [Wave.ID: WaveTrack] = [:]
+    /// The wave being worked out right now.
+    @Published private(set) var trackingWaveID: Wave.ID?
+    /// Waves where nobody could be found at the bookmark; they wait for a tap.
+    @Published private(set) var unfoundWaveIDs: Set<Wave.ID> = []
+    /// The wave on the loop screen, worked out before the rest.
+    var priorityWaveID: Wave.ID? {
+        didSet {
+            // Drop whichever wave is half done for this one; it starts again later.
+            if let id = priorityWaveID, trackingWaveID != nil, trackingWaveID != id,
+               tracks[id] == nil, !unfoundWaveIDs.contains(id) {
+                stopTracking()
+            }
+            trackPending()
+        }
+    }
     @Published var rate: Float = 1 {
         didSet { player.defaultRate = rate; if isPlaying { player.rate = rate } }
     }
 
-    private var asset: AVAsset?
+    private(set) var asset: AVAsset?
     /// Which video the waves belong to: the Photos id or the file's path.
     private var videoKey: String?
     private var securityScopedURL: URL?
@@ -98,6 +115,9 @@ final class PlayerModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var thumbnailGenerator: AVAssetImageGenerator?
     private var lastSavedAt = Date.distantPast
+    private var trackingTask: Task<Void, Never>?
+    /// Which run of the tracker is current, so a cancelled one can't land.
+    private var trackingRun = UUID()
 
     // Seek chasing (Apple QA1820): only one seek is in flight at a time, and
     // when it lands we jump straight to wherever the finger is now, so a fast
@@ -256,6 +276,7 @@ final class PlayerModel: ObservableObject {
 
     private func load(_ asset: AVAsset, title: String, key: String, resumeAt: Double?) async {
         thumbnailGenerator?.cancelAllCGImageGeneration()
+        stopTracking()
         player.pause()
         do {
             let duration = try await asset.load(.duration).seconds
@@ -275,6 +296,8 @@ final class PlayerModel: ObservableObject {
             self.videoSize = size
             self.videoKey = key
             self.waves = Self.loadWaves(key: key)
+            self.tracks = Self.loadTracks(key: key)
+            self.unfoundWaveIDs = []
             self.selectedWaveID = nil
         } catch {
             loadingMessage = nil
@@ -287,6 +310,7 @@ final class PlayerModel: ObservableObject {
         loadingMessage = nil
         if let resumeAt, resumeAt > 0, resumeAt < duration { seek(to: resumeAt, tolerance: 0) }
         generateThumbnails()
+        trackPending()
     }
 
     private func releaseSecurityScope() {
@@ -396,6 +420,7 @@ final class PlayerModel: ObservableObject {
         waves.sort { $0.time < $1.time }
         saveWaves()
         selectedWaveID = wave.id
+        trackPending()
     }
 
     func renameWave(_ id: Wave.ID, to name: String) {
@@ -414,12 +439,14 @@ final class PlayerModel: ObservableObject {
     func deleteWave(_ id: Wave.ID) {
         waves.removeAll { $0.id == id }
         saveWaves()
+        forgetTracks()
         if selectedWaveID == id { selectedWaveID = nil }
     }
 
     func deleteWaves(at offsets: IndexSet) {
         waves.remove(atOffsets: offsets)
         saveWaves()
+        forgetTracks()
     }
 
     func jump(to wave: Wave) {
@@ -444,6 +471,95 @@ final class PlayerModel: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: "waves." + key),
               let waves = try? JSONDecoder().decode([Wave].self, from: data) else { return [] }
         return waves
+    }
+
+    // MARK: Following you through each wave
+
+    /// Works out the next wave not yet followed, one at a time, in the
+    /// background — the one on the loop screen first.
+    func trackPending() {
+        guard trackingTask == nil, let asset, let videoKey else { return }
+        let waiting = waves.filter { tracks[$0.id] == nil && !unfoundWaveIDs.contains($0.id) }
+        guard let wave = waiting.first(where: { $0.id == priorityWaveID }) ?? waiting.first else { return }
+        startTracking(wave, tap: nil, asset: asset, key: videoKey)
+    }
+
+    /// You tapped yourself at the bookmark: follow whoever is there instead.
+    /// `point` is a fraction of the picture, from its top-left.
+    func retrack(_ id: Wave.ID, tappedAt point: CGPoint) {
+        guard let asset, let videoKey, let wave = waves.first(where: { $0.id == id }) else { return }
+        stopTracking()
+        tracks[id] = nil
+        unfoundWaveIDs.remove(id)
+        saveTracks()
+        startTracking(wave, tap: point, asset: asset, key: videoKey)
+    }
+
+    private func startTracking(_ wave: Wave, tap: CGPoint?, asset: AVAsset, key: String) {
+        let run = UUID()
+        trackingRun = run
+        trackingWaveID = wave.id
+        trackingTask = Task.detached(priority: .utility) { [weak self] in
+            let track = try? await WaveTracker.track(asset: asset, from: wave.time, tap: tap)
+            await self?.finishTracking(wave.id, run: run, track: track)
+        }
+    }
+
+    private func finishTracking(_ id: Wave.ID, run: UUID, track: WaveTrack?) {
+        guard run == trackingRun else { return }
+        trackingTask = nil
+        trackingWaveID = nil
+        if waves.contains(where: { $0.id == id }) {
+            if let track {
+                tracks[id] = track
+                saveTracks()
+            } else {
+                unfoundWaveIDs.insert(id)
+            }
+        }
+        trackPending()
+    }
+
+    private func stopTracking() {
+        trackingTask?.cancel()
+        trackingTask = nil
+        trackingWaveID = nil
+        trackingRun = UUID()
+    }
+
+    /// Drops the paths of deleted waves, and stops following one mid-way.
+    private func forgetTracks() {
+        let ids = Set(waves.map(\.id))
+        if let id = trackingWaveID, !ids.contains(id) {
+            stopTracking()
+            trackPending()
+        }
+        tracks = tracks.filter { ids.contains($0.key) }
+        unfoundWaveIDs.formIntersection(ids)
+        saveTracks()
+    }
+
+    /// Paths live in a file per video rather than with the waves: a few
+    /// hundred positions each would bloat the settings store.
+    private static func tracksURL(key: String) -> URL? {
+        guard let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                         appropriateFor: nil, create: true) else { return nil }
+        let folder = support.appendingPathComponent("WaveTracks", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "video"
+        return folder.appendingPathComponent(name + ".json")
+    }
+
+    private func saveTracks() {
+        guard let videoKey, let url = Self.tracksURL(key: videoKey) else { return }
+        let byName = Dictionary(uniqueKeysWithValues: tracks.map { ($0.key.uuidString, $0.value) })
+        try? JSONEncoder().encode(byName).write(to: url, options: .atomic)
+    }
+
+    private static func loadTracks(key: String) -> [Wave.ID: WaveTrack] {
+        guard let url = tracksURL(key: key), let data = try? Data(contentsOf: url),
+              let byName = try? JSONDecoder().decode([String: WaveTrack].self, from: data) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: byName.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
     }
 
     private func savePosition() {
