@@ -540,11 +540,12 @@ final class PlayerModel: ObservableObject {
     }
 
     /// Paths live in a file per video rather than with the waves: a few
-    /// hundred positions each would bloat the settings store.
+    /// hundred positions each would bloat the settings store. The folder's
+    /// number goes up whenever the tracker changes, so old paths are redone.
     private static func tracksURL(key: String) -> URL? {
         guard let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                          appropriateFor: nil, create: true) else { return nil }
-        let folder = support.appendingPathComponent("WaveTracks", isDirectory: true)
+        let folder = support.appendingPathComponent("WaveTracks2", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let name = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "video"
         return folder.appendingPathComponent(name + ".json")
