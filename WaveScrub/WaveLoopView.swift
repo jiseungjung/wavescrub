@@ -26,6 +26,7 @@ struct WaveLoopView: View {
             FollowingVideoView(
                 player: loop.player,
                 videoSize: model.videoSize,
+                frameRate: model.frameRate,
                 track: picking ? nil : track,
                 zoom: zoom,
                 onTap: picking ? { point in pick(point) } : nil,
@@ -246,6 +247,7 @@ final class LoopPlayer: ObservableObject {
 struct FollowingVideoView: UIViewRepresentable {
     let player: AVPlayer
     let videoSize: CGSize
+    let frameRate: Double
     let track: WaveTrack?
     let zoom: Double
     var onTap: ((CGPoint) -> Void)?
@@ -258,6 +260,7 @@ struct FollowingVideoView: UIViewRepresentable {
 
     func updateUIView(_ view: FollowingPlayerView, context: Context) {
         view.videoSize = videoSize
+        view.frameRate = frameRate
         view.track = track
         view.zoom = zoom
         view.onTap = onTap
@@ -270,6 +273,7 @@ final class FollowingPlayerView: UIView {
     private let playerLayer = AVPlayerLayer()
     private var displayLink: CADisplayLink?
     var videoSize: CGSize = .zero
+    var frameRate: Double = 30
     var track: WaveTrack?
     var zoom: Double = 1
     var onTap: ((CGPoint) -> Void)?
@@ -318,7 +322,11 @@ final class FollowingPlayerView: UIView {
         var scale = fit
         var center = CGPoint(x: 0.5, y: 0.5)
         if let track, let time = playerLayer.player?.currentTime().seconds, time.isFinite {
-            center = track.center(at: time)
+            // Move only when the picture does. The screen refreshes up to 120
+            // times a second and the video 30: sliding the same frame between
+            // its changes makes your eye see two of you.
+            let frame = (time * frameRate).rounded(.down) / frameRate
+            center = track.center(at: frame)
             let shown = CGFloat(Double(track.height) * Self.heightsInView / zoom) * videoSize.height
             scale = max(fill, bounds.height / max(1, shown))
         }

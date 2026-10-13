@@ -99,13 +99,13 @@ enum WaveTracker {
     static func track(asset: AVAsset, from start: Double, tap: CGPoint?,
                       log: ((String) -> Void)? = nil) async throws -> WaveTrack {
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
-        let (natural, transform, rate) = try await videoTrack.load(.naturalSize, .preferredTransform, .nominalFrameRate)
+        let (natural, transform) = try await videoTrack.load(.naturalSize, .preferredTransform)
         let duration = try await asset.load(.duration)
-        let fps = rate > 0 ? Double(rate) : 30
+        let fps = Double(Frames.rate)
         let turned = CGRect(origin: .zero, size: natural).applying(transform)
         let picture = CGSize(width: abs(turned.width), height: abs(turned.height))
         let frames = Frames(asset: asset, track: videoTrack, transform: transform, picture: picture,
-                            fps: fps, duration: duration)
+                            duration: duration)
         // Frames arrive already turned the right way up.
         let orientation = CGImagePropertyOrientation.up
 
@@ -239,7 +239,7 @@ enum WaveTracker {
     /// The rider at the right edge, and the moment their box was taken.
     private static func findRider(_ frames: Frames, start: Double, orientation: CGImagePropertyOrientation,
                                   log: ((String) -> Void)?) throws -> (CGRect, Double)? {
-        let fps = frames.fps, picture = frames.picture
+        let fps = Double(Frames.rate), picture = frames.picture
         let (reader, output) = try frames.reader(from: start, seconds: watchFor + 1)
         defer { reader.cancelReading() }
 
@@ -378,17 +378,19 @@ enum WaveTracker {
         let track: AVAssetTrack
         let transform: CGAffineTransform
         let picture: CGSize
-        let fps: Double
         let duration: CMTime
 
         static let lines: CGFloat = 1080
+        /// Frames a second looked at: half of what was filmed, which halves the
+        /// work. The path is smoothed over half a second anyway.
+        static let rate = 15
 
         func reader(from start: Double, seconds: Double) throws -> (AVAssetReader, AVAssetReaderVideoCompositionOutput) {
             let scale = min(1, Self.lines / max(1, min(picture.width, picture.height)))
             let composition = AVMutableVideoComposition()
             composition.renderSize = CGSize(width: (picture.width * scale / 2).rounded() * 2,
                                             height: (picture.height * scale / 2).rounded() * 2)
-            composition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps.rounded())))
+            composition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(Self.rate))
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
             layer.setTransform(transform.concatenating(CGAffineTransform(scaleX: scale, y: scale)), at: .zero)
             let instruction = AVMutableVideoCompositionInstruction()
@@ -403,8 +405,10 @@ enum WaveTracker {
             output.videoComposition = composition
             output.alwaysCopiesSampleData = false
             reader.add(output)
-            reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
-                                           duration: CMTime(seconds: seconds, preferredTimescale: 600))
+            // Never past the end of the video, or the reader refuses to start.
+            let from = CMTime(seconds: start, preferredTimescale: 60000)
+            let to = CMTimeMinimum(duration, from + CMTime(seconds: seconds, preferredTimescale: 600))
+            reader.timeRange = CMTimeRange(start: from, end: to)
             guard reader.startReading() else { throw Failure.unreadable }
             return (reader, output)
         }
