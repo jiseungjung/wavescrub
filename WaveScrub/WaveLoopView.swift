@@ -26,7 +26,6 @@ struct WaveLoopView: View {
             FollowingVideoView(
                 player: loop.player,
                 videoSize: model.videoSize,
-                frameRate: model.frameRate,
                 track: picking ? nil : track,
                 zoom: zoom,
                 onTap: picking ? { point in pick(point) } : nil,
@@ -247,7 +246,6 @@ final class LoopPlayer: ObservableObject {
 struct FollowingVideoView: UIViewRepresentable {
     let player: AVPlayer
     let videoSize: CGSize
-    let frameRate: Double
     let track: WaveTrack?
     let zoom: Double
     var onTap: ((CGPoint) -> Void)?
@@ -260,7 +258,6 @@ struct FollowingVideoView: UIViewRepresentable {
 
     func updateUIView(_ view: FollowingPlayerView, context: Context) {
         view.videoSize = videoSize
-        view.frameRate = frameRate
         view.track = track
         view.zoom = zoom
         view.onTap = onTap
@@ -271,9 +268,11 @@ struct FollowingVideoView: UIViewRepresentable {
 
 final class FollowingPlayerView: UIView {
     private let playerLayer = AVPlayerLayer()
+    /// While following you, each frame is cropped and drawn here instead.
+    private let followLayer = CALayer()
+    private let context = CIContext(options: [.cacheIntermediates: false])
     private var displayLink: CADisplayLink?
     var videoSize: CGSize = .zero
-    var frameRate: Double = 30
     var track: WaveTrack?
     var zoom: Double = 1
     var onTap: ((CGPoint) -> Void)?
@@ -289,8 +288,11 @@ final class FollowingPlayerView: UIView {
         backgroundColor = .black
         clipsToBounds = true
         playerLayer.player = player
-        playerLayer.videoGravity = .resize
+        playerLayer.videoGravity = .resizeAspect
         layer.addSublayer(playerLayer)
+        followLayer.contentsGravity = .resizeAspectFill
+        followLayer.isHidden = true
+        layer.addSublayer(followLayer)
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
         addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:))))
@@ -303,10 +305,19 @@ final class FollowingPlayerView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        followLayer.frame = bounds
+        CATransaction.commit()
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil, displayLink == nil {
-            let link = CADisplayLink(target: self, selector: #selector(follow))
+            let link = CADisplayLink(target: self, selector: #selector(follow(_:)))
             link.add(to: .main, forMode: .common)
             displayLink = link
         } else if window == nil {
@@ -315,40 +326,66 @@ final class FollowingPlayerView: UIView {
         }
     }
 
-    @objc private func follow() {
-        guard bounds.width > 0, bounds.height > 0, videoSize.width > 0, videoSize.height > 0 else { return }
-        let fit = min(bounds.width / videoSize.width, bounds.height / videoSize.height)
-        let fill = max(bounds.width / videoSize.width, bounds.height / videoSize.height)
-        var scale = fit
-        var center = CGPoint(x: 0.5, y: 0.5)
-        if let track, let time = playerLayer.player?.currentTime().seconds, time.isFinite {
-            // Move only when the picture does. The screen refreshes up to 120
-            // times a second and the video 30: sliding the same frame between
-            // its changes makes your eye see two of you.
-            let frame = (time * frameRate).rounded(.down) / frameRate
-            center = track.center(at: frame)
-            let shown = CGFloat(Double(track.height) * Self.heightsInView / zoom) * videoSize.height
-            scale = max(fill, bounds.height / max(1, shown))
+    /// Moving the player's own picture around can't be done in step with its
+    /// frames: the zoom changed a moment before or after the picture did, and
+    /// you were seen twice. So while following, each new frame is taken as it
+    /// arrives, cropped around where you are in that same frame, and drawn.
+    @objc private func follow(_ link: CADisplayLink) {
+        guard let player = playerLayer.player else { return }
+        // The looper queues copies of the wave ahead; each needs its own tap.
+        for item in (player as? AVQueuePlayer)?.items() ?? [player.currentItem].compactMap({ $0 })
+        where item.outputs.isEmpty {
+            item.add(AVPlayerItemVideoOutput(pixelBufferAttributes: nil))
         }
-        let size = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
-        // Keep you in the middle, but never slide past the picture's edge into black.
-        func place(_ length: CGFloat, in room: CGFloat, at c: CGFloat) -> CGFloat {
-            length <= room ? (room - length) / 2 : min(0, max(room - length, room / 2 - c * length))
+        guard let track, bounds.width > 0, bounds.height > 0, videoSize.width > 0, videoSize.height > 0 else {
+            followLayer.isHidden = true
+            playerLayer.isHidden = false
+            return
         }
-        let frame = CGRect(x: place(size.width, in: bounds.width, at: center.x),
-                           y: place(size.height, in: bounds.height, at: center.y),
-                           width: size.width, height: size.height)
-        guard frame != playerLayer.frame else { return }
+        guard let output = player.currentItem?.outputs.first as? AVPlayerItemVideoOutput else { return }
+        let itemTime = output.itemTime(forHostTime: link.targetTimestamp)
+        guard output.hasNewPixelBuffer(forItemTime: itemTime) else { return }
+        var shownAt = CMTime.zero
+        guard let buffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &shownAt) else { return }
+
+        // Frames arrive as the camera stored them; a phone held upright stores
+        // them on their side.
+        var image = CIImage(cvPixelBuffer: buffer)
+        let sideways = (image.extent.width > image.extent.height) != (videoSize.width > videoSize.height)
+        if sideways { image = image.oriented(.right) }
+        let w = image.extent.width, h = image.extent.height
+
+        // What part of the picture to show, as fractions of it, from the top-left.
+        let center = track.center(at: shownAt.seconds)
+        var shownH = CGFloat(Double(track.height) * Self.heightsInView / zoom)
+        var shownW = shownH * (bounds.width / bounds.height) * (h / w)
+        let over = max(shownW, shownH)
+        if over > 1 {
+            shownW /= over
+            shownH /= over
+        }
+        let left = min(max(0, center.x - shownW / 2), 1 - shownW)
+        let top = min(max(0, center.y - shownH / 2), 1 - shownH)
+        // Core Image measures from the bottom-left.
+        let crop = CGRect(x: image.extent.minX + left * w, y: image.extent.minY + (1 - top - shownH) * h,
+                          width: shownW * w, height: shownH * h)
+        let pixels = bounds.height * traitCollection.displayScale
+        var piece = image.cropped(to: crop)
+        if crop.height > pixels { piece = piece.transformed(by: CGAffineTransform(scaleX: pixels / crop.height, y: pixels / crop.height)) }
+        guard let picture = context.createCGImage(piece, from: piece.extent) else { return }
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = frame
+        followLayer.contents = picture
+        followLayer.isHidden = false
+        playerLayer.isHidden = true
         CATransaction.commit()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard let onTap else { return }
         let p = gesture.location(in: self)
-        let f = playerLayer.frame
+        let f = playerLayer.videoRect
         guard f.contains(p) else { return }
         onTap(CGPoint(x: (p.x - f.minX) / f.width, y: (p.y - f.minY) / f.height))
     }
