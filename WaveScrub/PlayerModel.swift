@@ -377,7 +377,6 @@ final class PlayerModel: ObservableObject {
 
     func beginScrub() {
         scrubbing = true
-        selectedWaveID = nil
         player.pause()
     }
 
@@ -385,8 +384,15 @@ final class PlayerModel: ObservableObject {
     /// finger. Zero lands on the exact frame; a few seconds lets the player
     /// show the nearest keyframe instead, which is what makes sweeping across
     /// an hour feel instant. Lifting the finger always lands exactly.
+    ///
+    /// The wave row stays up mid-drag: landing on a wave shows it, and it
+    /// holds until the next wave or until the finger lifts somewhere else.
     func scrub(to seconds: Double, tolerance: Double) {
         seek(to: seconds, tolerance: tolerance)
+        let frame = 1 / frameRate
+        if let wave = waves.first(where: { abs($0.time - currentTime) < frame }) {
+            selectedWaveID = wave.id
+        }
     }
 
     func endScrub() {
@@ -458,13 +464,6 @@ final class PlayerModel: ObservableObject {
         waves.remove(atOffsets: offsets)
         saveWaves()
         forgetTracks()
-    }
-
-    func jump(to wave: Wave) {
-        player.pause()
-        seek(to: wave.time, tolerance: 0)
-        savePosition()
-        selectedWaveID = wave.id
     }
 
     /// Which color a newly marked wave gets: whatever was last picked.

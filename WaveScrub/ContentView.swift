@@ -20,8 +20,6 @@ struct ContentView: View {
     @State private var showFiles = false
     @State private var controlsHidden = false
     @State private var showLoops = false
-    @State private var renamingWave: Wave?
-    @State private var renameText = ""
     @AppStorage(FineTape.spanKey) private var tapeSpan: Double = FineTape.defaultSpan
 
     var body: some View {
@@ -73,16 +71,6 @@ struct ContentView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
-        .alert("Rename Wave", isPresented: Binding(
-            get: { renamingWave != nil },
-            set: { if !$0 { renamingWave = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                if let wave = renamingWave { model.renameWave(wave.id, to: renameText) }
-            }
-        }
         .task { model.restoreLast() }
     }
 
@@ -102,12 +90,12 @@ struct ContentView: View {
             video
 
             VStack(spacing: 10) {
-                HStack {
+                HStack(spacing: 10) {
                     timeLabel
-                    Spacer()
+                    waveTag
+                    Spacer(minLength: 8)
                     transport
                 }
-                if let wave = selectedWave { WaveInlineEditor(wave: wave) }
                 FineTape().frame(height: 84)
                 OverviewStrip().frame(height: 56)
             }
@@ -127,11 +115,11 @@ struct ContentView: View {
                         openMenu
                         loopButton
                         timeLabel
-                        Spacer()
+                        waveTag
+                        Spacer(minLength: 8)
                         transport
                     }
                     .frame(height: 26)
-                    if let wave = selectedWave { WaveInlineEditor(wave: wave) }
                     FineTape().frame(height: 44)
                     OverviewStrip().frame(height: 34)
                 }
@@ -216,47 +204,18 @@ struct ContentView: View {
         // Every label is its own width (no padding frames), so the gaps
         // between them are exactly the spacing and all equal.
         HStack(spacing: 14) {
-            // Tap: mark a wave here. Hold: jump, rename, recolor, or delete one.
-            Menu {
-                Button { model.markWave() } label: { Label("Mark wave here", systemImage: "flag") }
-                if !model.waves.isEmpty {
-                    Section("Waves") {
-                        ForEach(model.waves) { wave in
-                            Menu {
-                                Button { model.jump(to: wave) } label: {
-                                    Label("Jump", systemImage: "arrow.right.circle")
-                                }
-                                Button {
-                                    renameText = wave.name
-                                    renamingWave = wave
-                                } label: { Label("Rename…", systemImage: "pencil") }
-                                Menu {
-                                    ForEach(WaveColor.allCases) { c in
-                                        Button {
-                                            model.setColor(wave.id, to: c)
-                                        } label: {
-                                            if wave.color == c {
-                                                Label(c.name, systemImage: "checkmark")
-                                            } else {
-                                                Text(c.name)
-                                            }
-                                        }
-                                    }
-                                } label: { Label("Color", systemImage: "paintpalette") }
-                                Button(role: .destructive) { model.deleteWave(wave.id) } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            } label: {
-                                Label("\(wave.name)  ·  \(formatTime(wave.time, decimals: 0))", systemImage: "flag.fill")
-                            }
-                        }
-                    }
+            // Off a wave, marks one here. On a wave, deletes it.
+            if let wave = selectedWave {
+                Button { model.deleteWave(wave.id) } label: {
+                    Image(systemName: "trash").font(.title3)
                 }
-            } label: {
-                Image(systemName: "flag.fill").font(.title3)
-            } primaryAction: {
-                model.markWave()
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } else {
+                Button {
+                    model.markWave()
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                } label: {
+                    Image(systemName: "flag.fill").font(.title3)
+                }
             }
             // How much time the top bar spans: tap to flip between finding the
             // wave and watching it slowly.
@@ -266,14 +225,6 @@ struct ContentView: View {
                 Text(FineTape.spanLabel(tapeSpan))
                     .font(.system(.callout, design: .monospaced))
             }
-            Menu {
-                ForEach([0.1, 0.25, 0.5, 1, 2] as [Float], id: \.self) { r in
-                    Button("\(rateLabel(r))×") { model.rate = r }
-                }
-            } label: {
-                Text("\(rateLabel(model.rate))×")
-                    .font(.system(.callout, design: .monospaced))
-            }
             Button { model.togglePlay() } label: {
                 Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").font(.title2)
                     .frame(width: 22, height: 28)
@@ -281,8 +232,10 @@ struct ContentView: View {
         }
     }
 
-    private func rateLabel(_ r: Float) -> String {
-        r == r.rounded() ? String(format: "%.0f", r) : String(format: "%g", r)
+    /// The wave you're on, beside the time. Empty between waves, so nothing
+    /// else moves.
+    @ViewBuilder private var waveTag: some View {
+        if let wave = selectedWave { WaveTag(wave: wave) }
     }
 
     /// Full library access is what lets the app read the original file in
@@ -300,53 +253,35 @@ struct ContentView: View {
     }
 }
 
-/// Shown inline whenever playback lands exactly on a wave's time.
-struct WaveInlineEditor: View {
+/// A wave's name you can type into directly, and its dot: tap the dot for
+/// the next color.
+struct WaveTag: View {
     @EnvironmentObject private var model: PlayerModel
     let wave: Wave
     @State private var name = ""
-    @State private var showColors = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Button { showColors.toggle() } label: {
-                    Circle().fill(wave.color.color).frame(width: 18, height: 18)
-                }
-                TextField("Name", text: $name, onCommit: { model.renameWave(wave.id, to: name) })
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: name) { model.renameWave(wave.id, to: name) }
-                Text(formatTime(wave.time, decimals: 0))
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Button(role: .destructive) { model.deleteWave(wave.id) } label: {
-                    Image(systemName: "trash").font(.callout)
-                }
-                Button { model.selectedWaveID = nil } label: {
-                    Image(systemName: "xmark.circle.fill").font(.callout).foregroundStyle(.secondary)
-                }
+        HStack(spacing: 6) {
+            Button {
+                let all = WaveColor.allCases
+                let next = all[(all.firstIndex(of: wave.color)! + 1) % all.count]
+                model.setColor(wave.id, to: next)
+            } label: {
+                Circle().fill(wave.color.color).frame(width: 12, height: 12)
+                    .padding(4)
             }
-            if showColors {
-                HStack(spacing: 10) {
-                    ForEach(WaveColor.allCases) { c in
-                        Circle()
-                            .fill(c.color)
-                            .frame(width: 20, height: 20)
-                            .overlay(Circle().strokeBorder(.white, lineWidth: wave.color == c ? 2 : 0))
-                            .onTapGesture {
-                                model.setColor(wave.id, to: c)
-                                showColors = false
-                            }
-                    }
-                }
-            }
+            TextField("Name", text: $name)
+                .submitLabel(.done)
+                .fixedSize()
+                .onChange(of: name) { model.renameWave(wave.id, to: name) }
         }
-        .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .font(.callout.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.leading, 2)
+        .padding(.trailing, 9)
+        .padding(.vertical, 1)
+        .background(wave.color.color.opacity(0.35), in: Capsule())
         .onAppear { name = wave.name }
-        .onChange(of: wave.id) {
-            name = wave.name
-            showColors = false
-        }
+        .onChange(of: wave.id) { name = wave.name }
     }
 }
