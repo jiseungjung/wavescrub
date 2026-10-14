@@ -259,7 +259,8 @@ struct WaveTag: View {
     @EnvironmentObject private var model: PlayerModel
     let wave: Wave
     @State private var name = ""
-    @FocusState private var editing: Bool
+    @State private var typing = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
@@ -271,19 +272,22 @@ struct WaveTag: View {
                 Circle().fill(wave.color.color).frame(width: 12, height: 12)
                     .padding(4)
             }
-            // Until you're typing, a tap anywhere on the name just starts
-            // typing at its end, rather than placing the cursor or selecting
-            // a word where the finger landed.
-            TextField("Name", text: $name)
-                .submitLabel(.done)
-                .fixedSize()
-                .focused($editing)
-                .onChange(of: name) { model.renameWave(wave.id, to: name) }
-                .overlay {
-                    if !editing {
-                        Color.clear.contentShape(Rectangle()).onTapGesture { editing = true }
-                    }
-                }
+            // Plain text until tapped, so the tap can't place the cursor or
+            // select a word; the box that replaces it starts at the end.
+            if typing {
+                TextField("Name", text: $name)
+                    .submitLabel(.done)
+                    .fixedSize()
+                    .focused($focused)
+                    .onAppear { DispatchQueue.main.async { focused = true } }
+                    .onChange(of: focused) { if !focused { typing = false } }
+                    .onChange(of: name) { model.renameWave(wave.id, to: name) }
+            } else {
+                Text(name.isEmpty ? "Name" : name)
+                    .lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onTapGesture { typing = true }
+            }
         }
         .font(.callout.weight(.semibold))
         .foregroundStyle(.white)
@@ -292,6 +296,9 @@ struct WaveTag: View {
         .padding(.vertical, 1)
         .background(wave.color.color.opacity(0.35), in: Capsule())
         .onAppear { name = wave.name }
-        .onChange(of: wave.id) { name = wave.name }
+        .onChange(of: wave.id) {
+            name = wave.name
+            typing = false
+        }
     }
 }
