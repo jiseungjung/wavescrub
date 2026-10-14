@@ -385,14 +385,12 @@ final class PlayerModel: ObservableObject {
     /// show the nearest keyframe instead, which is what makes sweeping across
     /// an hour feel instant. Lifting the finger always lands exactly.
     ///
-    /// The wave row stays up mid-drag: landing on a wave shows it, and it
-    /// holds until the next wave or until the finger lifts somewhere else.
+    /// The wave you're on follows the finger: its name shows while you're on
+    /// it and clears as soon as you move off.
     func scrub(to seconds: Double, tolerance: Double) {
         seek(to: seconds, tolerance: tolerance)
         let frame = 1 / frameRate
-        if let wave = waves.first(where: { abs($0.time - currentTime) < frame }) {
-            selectedWaveID = wave.id
-        }
+        selectedWaveID = waves.first { abs($0.time - currentTime) < frame }?.id
     }
 
     func endScrub() {
