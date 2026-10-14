@@ -259,6 +259,7 @@ struct WaveTag: View {
     @EnvironmentObject private var model: PlayerModel
     let wave: Wave
     @State private var name = ""
+    @FocusState private var editing: Bool
 
     var body: some View {
         HStack(spacing: 6) {
@@ -270,10 +271,19 @@ struct WaveTag: View {
                 Circle().fill(wave.color.color).frame(width: 12, height: 12)
                     .padding(4)
             }
+            // Until you're typing, a tap anywhere on the name just starts
+            // typing at its end, rather than placing the cursor or selecting
+            // a word where the finger landed.
             TextField("Name", text: $name)
                 .submitLabel(.done)
                 .fixedSize()
+                .focused($editing)
                 .onChange(of: name) { model.renameWave(wave.id, to: name) }
+                .overlay {
+                    if !editing {
+                        Color.clear.contentShape(Rectangle()).onTapGesture { editing = true }
+                    }
+                }
         }
         .font(.callout.weight(.semibold))
         .foregroundStyle(.white)
