@@ -89,7 +89,7 @@ final class PlayerModel: ObservableObject {
     @Published var selectedWaveID: Wave.ID?
     @Published private(set) var recents: [RecentVideo] = []
     @Published var errorMessage: String?
-    /// Where you are through each wave, keyed by the wave, once worked out.
+    /// Where the surfer is through each wave, keyed by the wave, once worked out.
     @Published private(set) var tracks: [Wave.ID: WaveTrack] = [:]
     /// The wave being worked out right now.
     @Published private(set) var trackingWaveID: Wave.ID?
@@ -482,7 +482,7 @@ final class PlayerModel: ObservableObject {
         return waves
     }
 
-    // MARK: Following you through each wave
+    // MARK: Following the surfer through each wave
 
     /// Works out the next wave not yet followed, one at a time, in the
     /// background — the one on the loop screen first.
@@ -493,7 +493,7 @@ final class PlayerModel: ObservableObject {
             startTracking(wave, tap: nil, asset: asset, key: videoKey)
             return
         }
-        // Then paths saved before you were followed backwards, which start a
+        // Then paths saved before surfers were followed backwards, which start a
         // moment after their bookmark.
         let late = waves.filter { wave in
             tracks[wave.id].map { $0.start > wave.time + 0.05 } == true && !unextendableWaveIDs.contains(wave.id)
@@ -531,7 +531,7 @@ final class PlayerModel: ObservableObject {
         trackPending()
     }
 
-    /// You tapped yourself, on the bookmark's frame or one a little after it:
+    /// The surfer was tapped, on the bookmark's frame or one a little after it:
     /// follow whoever is there instead. `point` is a fraction of the picture,
     /// from its top-left.
     func retrack(_ id: Wave.ID, tappedAt point: CGPoint, time: Double) {

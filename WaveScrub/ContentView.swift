@@ -149,7 +149,7 @@ struct ContentView: View {
         VStack(spacing: 18) {
             Image(systemName: "water.waves").font(.system(size: 56)).foregroundStyle(.cyan)
             Text("WaveScrub").font(.largeTitle.bold())
-            Text("Open a long video and find your wave.\nNothing is copied into the app.")
+            Text("Open a long video and find a wave.\nNothing is copied into the app.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             HStack(spacing: 12) {
@@ -186,7 +186,7 @@ struct ContentView: View {
         }
     }
 
-    /// Opens the screen that loops each marked wave, following you.
+    /// Opens the screen that loops each marked wave, following the surfer.
     private var loopButton: some View {
         Button { showLoops = true } label: {
             Image(systemName: "repeat").font(.title3)
