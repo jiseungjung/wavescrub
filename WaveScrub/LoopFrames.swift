@@ -30,7 +30,16 @@ final class LoopFrames: @unchecked Sendable {
     private var run = 0
 
     /// How many seconds are kept either side of where you are.
-    private static let reach = 2
+    private let reach: Int
+    /// The frames' size, as a share of the video's.
+    private let scale: CGFloat
+
+    /// Two clips side by side keep fewer, smaller frames each: they're only
+    /// half the screen, and two full sets would run the phone out of memory.
+    init(scale: CGFloat = 0.5, reach: Int = 2) {
+        self.scale = scale
+        self.reach = reach
+    }
 
     /// Starts over for a new loop, with nothing decoded yet.
     func reset(_ asset: AVAsset?, from start: Double, to end: Double) {
@@ -60,7 +69,7 @@ final class LoopFrames: @unchecked Sendable {
             direction = i > wanted ? 1 : -1
             wanted = i
         }
-        for key in seconds.keys where abs(key - i) > Self.reach { seconds[key] = nil }
+        for key in seconds.keys where abs(key - i) > reach { seconds[key] = nil }
         if decoding == nil { pump() }
         return seconds[i]?.last { $0.time <= time + 0.001 } ?? seconds[i]?.first
     }
@@ -97,7 +106,7 @@ final class LoopFrames: @unchecked Sendable {
         guard run == self.run else { return }
         self.starts = starts
         track = found
-        size = CGSize(width: (natural.width / 2).rounded(), height: (natural.height / 2).rounded())
+        size = CGSize(width: (natural.width * scale).rounded(), height: (natural.height * scale).rounded())
         pump()
     }
 
@@ -118,7 +127,7 @@ final class LoopFrames: @unchecked Sendable {
             defer { self.lock.unlock() }
             guard run == self.run else { return }
             self.decoding = nil
-            if abs(next - self.wanted) <= Self.reach { self.seconds[next] = frames }
+            if abs(next - self.wanted) <= self.reach { self.seconds[next] = frames }
             self.pump()
         }
     }

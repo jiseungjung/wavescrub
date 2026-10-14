@@ -112,7 +112,7 @@ final class PlayerModel: ObservableObject {
 
     private(set) var asset: AVAsset?
     /// Which video the waves belong to: the Photos id or the file's path.
-    private var videoKey: String?
+    private(set) var videoKey: String?
     private var securityScopedURL: URL?
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
@@ -282,29 +282,13 @@ final class PlayerModel: ObservableObject {
         stopTracking()
         player.pause()
         do {
-            let duration = try await asset.load(.duration).seconds
-            var fps = 30.0
-            var size = CGSize.zero
-            var orientation = CGImagePropertyOrientation.up
-            if let track = try await asset.loadTracks(withMediaType: .video).first {
-                let (rate, natural, transform) = try await track.load(.nominalFrameRate, .naturalSize, .preferredTransform)
-                if rate > 0 { fps = Double(rate) }
-                let r = CGRect(origin: .zero, size: natural).applying(transform)
-                size = CGSize(width: abs(r.width), height: abs(r.height))
-                switch (transform.a.rounded(), transform.b.rounded(), transform.c.rounded(), transform.d.rounded()) {
-                case (0, 1, -1, 0): orientation = .right
-                case (0, -1, 1, 0): orientation = .left
-                case (-1, 0, 0, -1): orientation = .down
-                default: orientation = .up
-                }
-            }
-            guard duration.isFinite, duration > 0 else { throw CocoaError(.fileReadCorruptFile) }
+            let info = try await VideoInfo.load(asset)
             self.asset = asset
             self.title = title
-            self.duration = duration
-            self.frameRate = fps
-            self.videoSize = size
-            self.videoOrientation = orientation
+            self.duration = info.duration
+            self.frameRate = info.frameRate
+            self.videoSize = info.size
+            self.videoOrientation = info.orientation
             self.videoKey = key
             self.waves = Self.loadWaves(key: key)
             self.tracks = Self.loadTracks(key: key)
@@ -323,6 +307,11 @@ final class PlayerModel: ObservableObject {
         if let resumeAt, resumeAt > 0, resumeAt < duration { seek(to: resumeAt, tolerance: 0) }
         generateThumbnails()
         trackPending()
+    }
+
+    /// The open video's length, frame rate, size and how it's turned.
+    var videoInfo: VideoInfo {
+        VideoInfo(duration: duration, frameRate: frameRate, size: videoSize, orientation: videoOrientation)
     }
 
     private func releaseSecurityScope() {
@@ -476,7 +465,7 @@ final class PlayerModel: ObservableObject {
         UserDefaults.standard.set(data, forKey: "waves." + videoKey)
     }
 
-    private static func loadWaves(key: String) -> [Wave] {
+    static func loadWaves(key: String) -> [Wave] {
         guard let data = UserDefaults.standard.data(forKey: "waves." + key),
               let waves = try? JSONDecoder().decode([Wave].self, from: data) else { return [] }
         return waves
@@ -605,7 +594,7 @@ final class PlayerModel: ObservableObject {
         try? JSONEncoder().encode(byName).write(to: url, options: .atomic)
     }
 
-    private static func loadTracks(key: String) -> [Wave.ID: WaveTrack] {
+    static func loadTracks(key: String) -> [Wave.ID: WaveTrack] {
         guard let url = tracksURL(key: key), let data = try? Data(contentsOf: url),
               let byName = try? JSONDecoder().decode([String: WaveTrack].self, from: data) else { return [:] }
         return Dictionary(uniqueKeysWithValues: byName.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })

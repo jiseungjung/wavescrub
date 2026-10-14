@@ -19,6 +19,7 @@ struct WaveLoopView: View {
     /// The frame shown to tap the surfer on.
     @State private var pickTime: Double = 0
     @State private var rate: Float = 1
+    @State private var comparing = false
     @AppStorage("loopZoom") private var zoom: Double = 1
 
     /// How long to loop from a bookmark while the surfer is still being found.
@@ -51,6 +52,17 @@ struct WaveLoopView: View {
             }
         }
         .statusBarHidden()
+        .fullScreenCover(isPresented: $comparing, onDismiss: {
+            model.priorityWaveID = waveID
+            refresh()
+            loop.play()
+        }) {
+            if let wave {
+                CompareView(first: wave)
+                    .environmentObject(model)
+                    .preferredColorScheme(.dark)
+            }
+        }
         .onAppear {
             model.player.pause()
             loop.rate = rate
@@ -88,6 +100,14 @@ struct WaveLoopView: View {
                 Image(systemName: "xmark").font(.title3)
             }
             Spacer()
+            // This wave beside another, from this video or a different one.
+            Button {
+                loop.pause()
+                comparing = true
+            } label: {
+                Image(systemName: "rectangle.split.1x2").font(.title3)
+            }
+            .disabled(picking || wave == nil)
             // Wrong person, or the ride cut short: tap the surfer again.
             Button {
                 beginPicking()
@@ -252,13 +272,17 @@ final class LoopPlayer: ObservableObject {
     /// A frame got ready for sliding, shown until the player's own sharp one
     /// of the same moment arrives.
     private(set) var slideFrame: LoopFrames.Frame?
-    private let frames = LoopFrames()
+    private let frames: LoopFrames
     private var looper: AVPlayerLooper?
     private var range: CMTimeRange?
     private var timeObserver: Any?
     private var rateObserver: NSKeyValueObservation?
 
-    init() {
+    /// A compact player is one of two side by side: silent, and keeping
+    /// smaller frames for sliding.
+    init(compact: Bool = false) {
+        frames = compact ? LoopFrames(scale: 0.25, reach: 1) : LoopFrames()
+        player.isMuted = compact
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, !self.seeking, self.player.currentItem != nil else { return }
@@ -279,10 +303,18 @@ final class LoopPlayer: ObservableObject {
     }
 
     /// Only a followed loop gets frames ready for sliding: the rest is
-    /// shown by the player as it is.
-    func loop(_ asset: AVAsset, from start: Double, to end: Double, followed: Bool = false) {
+    /// shown by the player as it is. Given a moment, the loop starts there,
+    /// playing or not; otherwise it plays from the start.
+    func loop(_ asset: AVAsset, from start: Double, to end: Double, followed: Bool = false,
+              at time: Double? = nil, playing: Bool = true) {
         let wanted = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
                                  end: CMTime(seconds: max(end, start + 0.5), preferredTimescale: 60000))
+        defer {
+            if let time {
+                if !playing { player.pause() }
+                jump(min(max(time, clock.start), clock.end))
+            }
+        }
         guard wanted != range else { return }
         clear()
         range = wanted
@@ -325,6 +357,16 @@ final class LoopPlayer: ObservableObject {
             show(time)
         }
     }
+
+    /// Moves to a moment without stopping, to keep a linked clip in step.
+    func jump(_ time: Double) {
+        slideFrame = nil
+        clock.time = time
+        wantedFrame = CMTime(seconds: time, preferredTimescale: 60000)
+        if !seeking { seekToWanted() }
+    }
+
+    var isPlaying: Bool { player.rate != 0 }
 
     func play() {
         slideFrame = nil
@@ -432,9 +474,14 @@ struct FollowingVideoView: UIViewRepresentable {
     var onTap: ((CGPoint) -> Void)?
     var onSwipe: (Int) -> Void
     var onZoom: (Double) -> Void
+    /// The wave shown, when comparing: a new one starts centred and unzoomed.
+    var clipID: UUID? = nil
+    /// One of two clips being compared: drag to look around, double-tap to
+    /// centre, no swiping to another wave.
+    var comparing = false
 
     func makeUIView(context: Context) -> FollowingPlayerView {
-        FollowingPlayerView(loop: loop)
+        FollowingPlayerView(loop: loop, comparing: comparing)
     }
 
     func updateUIView(_ view: FollowingPlayerView, context: Context) {
@@ -446,6 +493,7 @@ struct FollowingVideoView: UIViewRepresentable {
         view.onTap = onTap
         view.onSwipe = onSwipe
         view.onZoom = onZoom
+        view.clipID = clipID
     }
 }
 
@@ -457,7 +505,9 @@ final class FollowingPlayerView: UIView {
     private var displayLink: CADisplayLink?
     var videoSize: CGSize = .zero
     var orientation: CGImagePropertyOrientation = .up
-    var track: WaveTrack?
+    var track: WaveTrack? {
+        didSet { if track != oldValue { updateGestures() } }
+    }
     var zoom: Double = 1 {
         didSet { if zoom != oldValue { needsRedraw = true } }
     }
@@ -467,6 +517,13 @@ final class FollowingPlayerView: UIView {
     var onTap: ((CGPoint) -> Void)?
     var onSwipe: (Int) -> Void = { _ in }
     var onZoom: (Double) -> Void = { _ in }
+    var clipID: UUID? {
+        didSet { if clipID != oldValue { recenter() } }
+    }
+    private let comparing: Bool
+    /// Where the view has been dragged to while following, as a share of what's
+    /// shown: the surfer stays put that far from the middle.
+    private var lookOffset: CGPoint = .zero
     /// The picture's width over its height, upright, from the last frame drawn.
     private var pictureAspect: CGFloat = 16 / 9
     /// How far the still frame is zoomed and moved from the middle.
@@ -485,9 +542,10 @@ final class FollowingPlayerView: UIView {
     /// hand showed.
     static let heightsInView = 9.0
 
-    init(loop: LoopPlayer) {
+    init(loop: LoopPlayer, comparing: Bool = false) {
         let player = loop.player
         self.loop = loop
+        self.comparing = comparing
         super.init(frame: .zero)
         backgroundColor = .black
         clipsToBounds = true
@@ -500,7 +558,12 @@ final class FollowingPlayerView: UIView {
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
         addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:))))
-        for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
+        if comparing {
+            let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
+            doubleTap.numberOfTapsRequired = 2
+            addGestureRecognizer(doubleTap)
+        }
+        for direction in [UISwipeGestureRecognizer.Direction.left, .right] where !comparing {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
             swipe.direction = direction
             addGestureRecognizer(swipe)
@@ -541,8 +604,27 @@ final class FollowingPlayerView: UIView {
         playerLayer.setAffineTransform(CGAffineTransform(translationX: stillOffset.x, y: stillOffset.y)
             .scaledBy(x: s, y: s))
         CATransaction.commit()
-        pan.isEnabled = s > 1.01
+        updateGestures()
+    }
+
+    /// Dragging moves a zoomed frame, or, when comparing, where the view looks
+    /// while following; otherwise a sideways swipe changes wave.
+    private func updateGestures() {
+        pan.isEnabled = stillScale > 1.01 || (comparing && track != nil)
         for swipe in swipes { swipe.isEnabled = !pan.isEnabled }
+    }
+
+    /// Back to the surfer in the middle, or the whole picture.
+    private func recenter() {
+        lookOffset = .zero
+        needsRedraw = true
+        setStill(scale: 1, offset: .zero)
+    }
+
+    /// A clip being compared that isn't followed is pinched and dragged as
+    /// the still frame is.
+    private var zoomsPicture: Bool {
+        stillID != nil || (comparing && track == nil)
     }
 
     override func didMoveToWindow() {
@@ -620,7 +702,9 @@ final class FollowingPlayerView: UIView {
         var left: CGFloat = 0, top: CGFloat = 0
         let offsets = (-5...5).map { Double($0) * 0.1 }
         for offset in offsets {
-            let c = offset == 0 ? center : track.center(at: time + offset)
+            var c = offset == 0 ? center : track.center(at: time + offset)
+            c.x += lookOffset.x * shownW
+            c.y += lookOffset.y * shownH
             left += shownW >= 1 ? (1 - shownW) / 2 : min(max(0, c.x - shownW / 2), 1 - shownW)
             top += shownH >= 1 ? (1 - shownH) / 2 : min(max(0, c.y - shownH / 2), 1 - shownH)
         }
@@ -656,7 +740,7 @@ final class FollowingPlayerView: UIView {
 
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         guard gesture.state == .changed else { return }
-        if stillID != nil {
+        if zoomsPicture {
             // Keep the spot between the fingers under them.
             let p = gesture.location(in: self)
             let middle = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -682,9 +766,20 @@ final class FollowingPlayerView: UIView {
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         let d = gesture.translation(in: self)
+        if comparing, track != nil, stillID == nil {
+            // The picture moves with the finger, at most until the surfer
+            // reaches the edge of the view.
+            lookOffset = CGPoint(x: min(max(lookOffset.x - d.x / bounds.width, -0.5), 0.5),
+                                 y: min(max(lookOffset.y - d.y / bounds.height, -0.5), 0.5))
+            needsRedraw = true
+            gesture.setTranslation(.zero, in: self)
+            return
+        }
         setStill(scale: stillScale, offset: CGPoint(x: stillOffset.x + d.x, y: stillOffset.y + d.y))
         gesture.setTranslation(.zero, in: self)
     }
+
+    @objc private func handleDoubleTap() { recenter() }
 
     /// Swiping left brings the next wave in, as paging through photos does.
     @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
