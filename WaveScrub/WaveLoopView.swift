@@ -469,8 +469,21 @@ final class FollowingPlayerView: UIView {
             shownW /= over
             shownH /= over
         }
-        let left = min(max(0, center.x - shownW / 2), 1 - shownW)
-        let top = min(max(0, center.y - shownH / 2), 1 - shownH)
+        // Never past the picture's edge. You start a wave at its right edge, so
+        // the view waits there until you come into the middle; held to the
+        // edge frame by frame it then set off at your full speed in one jolt,
+        // and at a wide zoom it caught and let go of the top as you rose and
+        // dropped. Averaged over a second around now, it eases off the edge
+        // and back onto it instead, and is still exactly on you in between.
+        var left: CGFloat = 0, top: CGFloat = 0
+        let offsets = (-5...5).map { Double($0) * 0.1 }
+        for offset in offsets {
+            let c = offset == 0 ? center : track.center(at: shownAt.seconds + offset)
+            left += min(max(0, c.x - shownW / 2), 1 - shownW)
+            top += min(max(0, c.y - shownH / 2), 1 - shownH)
+        }
+        left /= CGFloat(offsets.count)
+        top /= CGFloat(offsets.count)
         // Core Image measures from the bottom-left.
         let crop = CGRect(x: image.extent.minX + left * w, y: image.extent.minY + (1 - top - shownH) * h,
                           width: shownW * w, height: shownH * h)
