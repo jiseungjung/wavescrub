@@ -30,7 +30,7 @@ final class ZoomingPlayerView: UIScrollView, UIScrollViewDelegate {
     private var laidOutFor: CGSize = .zero
     var onSingleTap: () -> Void = {}
     var videoSize: CGSize = .zero {
-        didSet { if oldValue != videoSize { relayout() } }
+        didSet { if oldValue != videoSize { relayout(keepZoom: false) } }
     }
 
     init(player: AVPlayer) {
@@ -59,12 +59,14 @@ final class ZoomingPlayerView: UIScrollView, UIScrollViewDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Rotating the phone changes the size a lot; start that view unzoomed.
-        // A nudge of a point or two (the controls around it re-laying out
-        // while playing) must leave the zoom exactly where it is.
+        // Rotating the phone starts that view unzoomed. Any other resize (the
+        // wave editor appearing under the video) keeps the zoom and the spot
+        // you were looking at. A nudge of a point or two (the controls around
+        // it re-laying out while playing) leaves everything exactly where it is.
         let size = bounds.size
         if abs(size.width - laidOutFor.width) > 40 || abs(size.height - laidOutFor.height) > 40 {
-            relayout()
+            let rotated = (size.width > size.height) != (laidOutFor.width > laidOutFor.height)
+            relayout(keepZoom: !rotated)
         } else if size != laidOutFor {
             laidOutFor = size
             centerContent()
@@ -72,17 +74,33 @@ final class ZoomingPlayerView: UIScrollView, UIScrollViewDelegate {
     }
 
     /// Sizes the video to fit exactly, so zooming never pans into black bars.
-    private func relayout() {
+    private func relayout(keepZoom: Bool) {
+        let old = laidOutFor
         laidOutFor = bounds.size
         guard bounds.width > 0, bounds.height > 0 else { return }
+        let scale = keepZoom ? zoomScale : 1
+        // Where the middle of the view was, as a fraction across the video.
+        let focus = contentSize.width > 0 && contentSize.height > 0
+            ? CGPoint(x: min(max((contentOffset.x + old.width / 2) / contentSize.width, 0), 1),
+                      y: min(max((contentOffset.y + old.height / 2) / contentSize.height, 0), 1))
+            : CGPoint(x: 0.5, y: 0.5)
         zoomScale = 1
         let fit = videoSize == .zero
             ? bounds.size
             : AVMakeRect(aspectRatio: videoSize, insideRect: CGRect(origin: .zero, size: bounds.size)).size
         content.frame = CGRect(origin: .zero, size: fit)
         contentSize = fit
+        zoomScale = scale
         centerContent()
-        contentOffset = CGPoint(x: -contentInset.left, y: -contentInset.top)
+        if scale > 1.01 {
+            let x = focus.x * contentSize.width - bounds.width / 2
+            let y = focus.y * contentSize.height - bounds.height / 2
+            contentOffset = CGPoint(
+                x: min(max(x, -contentInset.left), contentSize.width + contentInset.right - bounds.width),
+                y: min(max(y, -contentInset.top), contentSize.height + contentInset.bottom - bounds.height))
+        } else {
+            contentOffset = CGPoint(x: -contentInset.left, y: -contentInset.top)
+        }
     }
 
     private func centerContent() {
