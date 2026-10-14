@@ -7,18 +7,24 @@ import UIKit
 ///
 /// A wave not yet followed loops unzoomed from its bookmark until it is. If
 /// nobody could be found at the bookmark, or the wrong person was picked, the
-/// bookmark's frame is shown still and you tap yourself.
+/// bookmark's frame is shown still and you tap yourself. Pinch and drag to
+/// look closer, and slide a little past the bookmark if you're easier to see
+/// there; you're followed back to the bookmark either way.
 struct WaveLoopView: View {
     @EnvironmentObject private var model: PlayerModel
     @Environment(\.dismiss) private var dismiss
     @StateObject private var loop = LoopPlayer()
     @State private var waveID: Wave.ID?
     @State private var picking = false
+    /// The frame shown to tap yourself on.
+    @State private var pickTime: Double = 0
     @State private var rate: Float = 1
     @AppStorage("loopZoom") private var zoom: Double = 1
 
     /// How long to loop from a bookmark while you're still being found.
     private static let unfollowedLength = 12.0
+    /// How far past the bookmark you can go to find a clearer frame of you.
+    private static let pickReach = 10.0
 
     var body: some View {
         ZStack {
@@ -29,6 +35,7 @@ struct WaveLoopView: View {
                 orientation: model.videoOrientation,
                 track: picking ? nil : track,
                 zoom: zoom,
+                stillID: picking ? waveID : nil,
                 onTap: picking ? { point in pick(point) } : nil,
                 onSwipe: { step($0) },
                 onPinch: { zoom = min(4, max(0.4, zoom * $0)) }
@@ -40,6 +47,7 @@ struct WaveLoopView: View {
                 Spacer()
                 if let status { statusLabel(status) }
                 Spacer()
+                if picking, let wave { pickTimeBar(wave) }
                 waveNames
             }
         }
@@ -57,14 +65,14 @@ struct WaveLoopView: View {
         }
         .onChange(of: waveID) {
             picking = waveID.map { model.unfoundWaveIDs.contains($0) } ?? false
+            pickTime = wave?.time ?? 0
             model.priorityWaveID = waveID
             refresh()
         }
         .onChange(of: track) { refresh() }
         .onChange(of: model.unfoundWaveIDs) {
             if let waveID, model.unfoundWaveIDs.contains(waveID), !picking {
-                picking = true
-                refresh()
+                beginPicking()
             }
         }
         .onChange(of: rate) { loop.rate = rate }
@@ -83,8 +91,7 @@ struct WaveLoopView: View {
             Spacer()
             // Wrong person, or the ride cut short: tap yourself again.
             Button {
-                picking = true
-                refresh()
+                beginPicking()
             } label: {
                 Image(systemName: "person.crop.rectangle").font(.title3)
             }
@@ -115,7 +122,7 @@ struct WaveLoopView: View {
             switch status {
             case .pick:
                 Image(systemName: "hand.tap")
-                Text("Tap yourself")
+                Text("Pinch to zoom, tap yourself")
             case .finding:
                 ProgressView()
                 Text("Finding you…")
@@ -126,6 +133,33 @@ struct WaveLoopView: View {
         .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: Capsule())
         .allowsHitTesting(false)
+    }
+
+    /// Slides the still frame on from the bookmark, to one where you're easier
+    /// to make out.
+    private func pickTimeBar(_ wave: Wave) -> some View {
+        let last = max(wave.time, min(model.duration, wave.time + Self.pickReach))
+        let frame = 1 / max(1, model.frameRate)
+        return HStack(spacing: 12) {
+            Button { pickTime = max(wave.time, pickTime - frame) } label: {
+                Image(systemName: "backward.frame.fill")
+            }
+            .disabled(pickTime <= wave.time)
+            Slider(value: Binding(get: { pickTime }, set: { pickTime = $0 }), in: wave.time...max(last, wave.time + frame))
+                .tint(.white)
+            Button { pickTime = min(last, pickTime + frame) } label: {
+                Image(systemName: "forward.frame.fill")
+            }
+            .disabled(pickTime >= last)
+            Text(String(format: "+%.1fs", pickTime - wave.time))
+                .font(.system(.callout, design: .monospaced))
+                .frame(width: 56, alignment: .trailing)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial.opacity(0.8))
+        .onChange(of: pickTime) { loop.show(pickTime) }
     }
 
     /// Every wave by the name and color you gave its bookmark, in time order.
@@ -170,9 +204,15 @@ struct WaveLoopView: View {
         waveID = model.waves[next].id
     }
 
+    private func beginPicking() {
+        picking = true
+        pickTime = wave?.time ?? 0
+        refresh()
+    }
+
     private func pick(_ point: CGPoint) {
         guard let waveID else { return }
-        model.retrack(waveID, tappedAt: point)
+        model.retrack(waveID, tappedAt: point, time: pickTime)
         picking = false
         refresh()
     }
@@ -183,7 +223,7 @@ struct WaveLoopView: View {
             return
         }
         if picking {
-            loop.still(asset, at: wave.time)
+            loop.still(asset, at: pickTime)
         } else if let track {
             loop.loop(asset, from: track.start, to: track.end)
         } else {
@@ -218,14 +258,37 @@ final class LoopPlayer: ObservableObject {
         player.play()
     }
 
-    /// The exact frame at the bookmark, held still, to tap yourself on.
+    /// The exact frame at the bookmark, or a little after, held still, to tap
+    /// yourself on.
     func still(_ asset: AVAsset, at time: Double) {
         clear()
         let item = AVPlayerItem(asset: asset)
         player.insert(item, after: nil)
         player.pause()
-        item.seek(to: CMTime(seconds: time, preferredTimescale: 60000),
-                  toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
+        show(time)
+    }
+
+    /// Moves the still frame. While a seek is under way only the latest
+    /// wanted frame is kept, so sliding quickly never queues up a backlog.
+    func show(_ time: Double) {
+        wantedFrame = CMTime(seconds: time, preferredTimescale: 60000)
+        if !seeking { seekToWanted() }
+    }
+
+    private var wantedFrame = CMTime.zero
+    private var seeking = false
+
+    private func seekToWanted() {
+        guard looper == nil, let item = player.currentItem else { return }
+        seeking = true
+        let target = wantedFrame
+        item.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.seeking = false
+                if self.wantedFrame != target { self.seekToWanted() }
+            }
+        }
     }
 
     func stop() {
@@ -233,6 +296,7 @@ final class LoopPlayer: ObservableObject {
     }
 
     private func clear() {
+        seeking = false
         looper?.disableLooping()
         looper = nil
         range = nil
@@ -243,13 +307,17 @@ final class LoopPlayer: ObservableObject {
 
 /// The video, moved and scaled every screen refresh so you stay in the middle
 /// at the size you'd have zoomed to by hand. Without a path it shows the
-/// whole picture, and a tap reports where in the picture it landed.
+/// whole picture, and a tap reports where in the picture it landed. A still
+/// frame to tap on can be pinched and dragged to look closer.
 struct FollowingVideoView: UIViewRepresentable {
     let player: AVPlayer
     let videoSize: CGSize
     let orientation: CGImagePropertyOrientation
     let track: WaveTrack?
     let zoom: Double
+    /// The wave whose still frame is up to tap yourself on, if any. A new one
+    /// starts unzoomed.
+    var stillID: Wave.ID?
     var onTap: ((CGPoint) -> Void)?
     var onSwipe: (Int) -> Void
     var onPinch: (Double) -> Void
@@ -263,6 +331,7 @@ struct FollowingVideoView: UIViewRepresentable {
         view.orientation = orientation
         view.track = track
         view.zoom = zoom
+        view.stillID = stillID
         view.onTap = onTap
         view.onSwipe = onSwipe
         view.onPinch = onPinch
@@ -279,9 +348,17 @@ final class FollowingPlayerView: UIView {
     var orientation: CGImagePropertyOrientation = .up
     var track: WaveTrack?
     var zoom: Double = 1
+    var stillID: UUID? {
+        didSet { if stillID != oldValue { setStill(scale: 1, offset: .zero) } }
+    }
     var onTap: ((CGPoint) -> Void)?
     var onSwipe: (Int) -> Void = { _ in }
     var onPinch: (Double) -> Void = { _ in }
+    /// How far the still frame is zoomed and moved from the middle.
+    private var stillScale: CGFloat = 1
+    private var stillOffset: CGPoint = .zero
+    private let pan = UIPanGestureRecognizer()
+    private var swipes: [UISwipeGestureRecognizer] = []
 
     /// How many of you fit top to bottom, at zoom 1: what the clips you cut
     /// by hand showed.
@@ -304,7 +381,12 @@ final class FollowingPlayerView: UIView {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
             swipe.direction = direction
             addGestureRecognizer(swipe)
+            swipes.append(swipe)
         }
+        pan.addTarget(self, action: #selector(handlePan(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.isEnabled = false
+        addGestureRecognizer(pan)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -313,9 +395,30 @@ final class FollowingPlayerView: UIView {
         super.layoutSubviews()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        playerLayer.setAffineTransform(.identity)
         playerLayer.frame = bounds
         followLayer.frame = bounds
         CATransaction.commit()
+        setStill(scale: stillScale, offset: stillOffset)
+    }
+
+    /// Zooms and moves the still frame, never so far that the picture leaves
+    /// an edge of the screen it was filling. Dragging is only for a zoomed
+    /// frame; otherwise a sideways swipe changes wave.
+    private func setStill(scale: CGFloat, offset: CGPoint) {
+        let s = min(12, max(1, scale))
+        let video = playerLayer.videoRect
+        let reachX = max(0, (video.width * s - bounds.width) / 2)
+        let reachY = max(0, (video.height * s - bounds.height) / 2)
+        stillScale = s
+        stillOffset = CGPoint(x: min(max(offset.x, -reachX), reachX), y: min(max(offset.y, -reachY), reachY))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.setAffineTransform(CGAffineTransform(translationX: stillOffset.x, y: stillOffset.y)
+            .scaledBy(x: s, y: s))
+        CATransaction.commit()
+        pan.isEnabled = s > 1.01
+        for swipe in swipes { swipe.isEnabled = !pan.isEnabled }
     }
 
     override func didMoveToWindow() {
@@ -386,7 +489,8 @@ final class FollowingPlayerView: UIView {
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard let onTap else { return }
-        let p = gesture.location(in: self)
+        // Through the still frame's zoom, to a point on the picture itself.
+        let p = layer.convert(gesture.location(in: self), to: playerLayer)
         let f = playerLayer.videoRect
         guard f.contains(p) else { return }
         onTap(CGPoint(x: (p.x - f.minX) / f.width, y: (p.y - f.minY) / f.height))
@@ -394,8 +498,24 @@ final class FollowingPlayerView: UIView {
 
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         guard gesture.state == .changed else { return }
-        onPinch(Double(gesture.scale))
+        if stillID != nil {
+            // Keep the spot between the fingers under them.
+            let p = gesture.location(in: self)
+            let middle = CGPoint(x: bounds.midX, y: bounds.midY)
+            let s = min(12, max(1, stillScale * gesture.scale))
+            let k = s / stillScale
+            setStill(scale: s, offset: CGPoint(x: p.x - middle.x - (p.x - middle.x - stillOffset.x) * k,
+                                               y: p.y - middle.y - (p.y - middle.y - stillOffset.y) * k))
+        } else {
+            onPinch(Double(gesture.scale))
+        }
         gesture.scale = 1
+    }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let d = gesture.translation(in: self)
+        setStill(scale: stillScale, offset: CGPoint(x: stillOffset.x + d.x, y: stillOffset.y + d.y))
+        gesture.setTranslation(.zero, in: self)
     }
 
     /// Swiping left brings the next wave in, as paging through photos does.

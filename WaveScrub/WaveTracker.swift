@@ -77,6 +77,9 @@ enum WaveTracker {
     /// How tall a surfer is, as a share of the picture's height, in the clips
     /// measured. Sizes the box the tracker starts from.
     static let riderHeight = 0.042
+    /// Seconds of video read at a time when following you backwards. Each
+    /// piece is held whole, so this keeps memory to a few dozen megabytes.
+    static let backPiece = 0.5
 
     // Finding you at the bookmark.
     /// Only shapes this far right are candidates.
@@ -94,9 +97,14 @@ enum WaveTracker {
     /// Below this share of dark pixels, a candidate's box has slid onto water.
     static let stillDark = 0.10
 
+    /// `tap`, when given, is where you tapped yourself and on which frame: the
+    /// bookmark's, or a later one where you were easier to see. From a later
+    /// frame you are also followed backwards to the bookmark, so the loop
+    /// still starts there.
+    ///
     /// `log`, when given, receives one line per frame and the reason the ride
     /// ended. Only the Mac test run uses it.
-    static func track(asset: AVAsset, from start: Double, tap: CGPoint?,
+    static func track(asset: AVAsset, from start: Double, tap: (point: CGPoint, time: Double)?,
                       log: ((String) -> Void)? = nil) async throws -> WaveTrack {
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
         let (natural, transform) = try await videoTrack.load(.naturalSize, .preferredTransform)
@@ -112,8 +120,9 @@ enum WaveTracker {
         let seed: CGRect
         let seedTime: Double
         if let tap {
-            seed = riderBox(at: tap, picture: picture)
-            seedTime = start
+            seed = riderBox(at: tap.point, picture: picture)
+            // On the same beat as the frames read from the bookmark.
+            seedTime = start + max(0, ((tap.time - start) * fps).rounded()) / fps
         } else {
             guard let found = try findRider(frames, start: start, orientation: orientation, log: log) else {
                 log?("end,nobody at the bookmark")
@@ -125,18 +134,14 @@ enum WaveTracker {
         log?(String(format: "seed,%.3f,%.4f,%.4f", seedTime, seed.midX, seed.midY))
         try Task.checkCancellation()
 
+        var follower = Follower(seed: seed, picture: picture, orientation: orientation)
+        if seedTime > start + 0.5 / fps {
+            follower = try followBack(frames, from: seedTime, to: start, seed: seed, log: log)
+        }
+
         let (reader, output) = try frames.reader(from: seedTime, seconds: longestRide)
         defer { reader.cancelReading() }
 
-        let sequence = VNSequenceRequestHandler()
-        var last = VNDetectedObjectObservation(boundingBox: visionRect(seed))
-        var previous: CGRect?
-        var frozen = 0
-        var recent: [Luma] = []
-        var times: [Double] = []
-        var xs: [Double] = []
-        var ys: [Double] = []
-        var lostSince: Double?
         var end: Double?
         var reason = "the clip ran out"
 
@@ -145,60 +150,24 @@ enum WaveTracker {
             let t = sample.presentationTimeStamp.seconds
             // The reader starts at the keyframe before; skip up to the start.
             guard t >= seedTime - 0.5 / fps, let buffer = sample.imageBuffer, let luma = Luma(buffer) else { continue }
-            recent.append(luma)
-            if recent.count > compareFrames + 1 { recent.removeFirst() }
-
-            let request = VNTrackObjectRequest(detectedObjectObservation: last)
-            request.trackingLevel = .accurate
-            try sequence.perform([request], on: buffer, orientation: orientation)
-            guard let found = request.results?.first as? VNDetectedObjectObservation else {
+            guard let step = try follower.follow(buffer, luma: luma, at: t) else {
                 reason = "the tracker returned nothing"
                 break
             }
-            last = found
-            var box = topLeftRect(found.boundingBox)
-            frozen = previous.map { abs($0.midX - box.midX) < 1e-6 && abs($0.midY - box.midY) < 1e-6 } == true ? frozen + 1 : 0
-            previous = box
-            let dark = luma.darkShare(in: box, orientation: orientation)
-            var note = "ok"
-
-            if found.confidence < lostConfidence || frozen >= 2 || dark < emptyBox {
-                note = found.confidence < lostConfidence ? "low" : frozen >= 2 ? "frozen" : "empty"
-                let guess = predicted(at: t, times: times, xs: xs, ys: ys)
-                if let guess, recent.count > compareFrames,
-                   let p = movingDarkShapes(now: luma, before: recent[0], orientation: orientation)
-                       .filter({ abs($0.x - guess.x) < searchReach && abs($0.y - guess.y) < searchReach })
-                       .min(by: { hypot($0.x - guess.x, $0.y - guess.y) < hypot($1.x - guess.x, $1.y - guess.y) }) {
-                    box = riderBox(at: p, picture: picture)
-                    last = VNDetectedObjectObservation(boundingBox: visionRect(box))
-                    previous = nil
-                    frozen = 0
-                    lostSince = nil
-                    note += "+found"
-                } else {
-                    if lostSince == nil { lostSince = t }
-                    if let since = lostSince, t - since >= lostFor {
-                        end = since
-                        reason = "lost you and couldn't pick you back up"
-                        log?(String(format: "frame,%.3f,%.4f,%.4f,%.3f,%.2f,%@", t, box.midX, box.midY, found.confidence, dark, note))
-                        break
-                    }
-                    // Until you're found again, carry on where your speed says.
-                    if let guess { box = riderBox(at: guess, picture: picture) }
-                }
-            } else {
-                lostSince = nil
+            if let since = follower.lostSince, t - since >= lostFor {
+                end = since
+                reason = "lost you and couldn't pick you back up"
+                log?(step.line(t))
+                break
             }
-            log?(String(format: "frame,%.3f,%.4f,%.4f,%.3f,%.2f,%@", t, box.midX, box.midY, found.confidence, dark, note))
+            log?(step.line(t))
+            follower.record(step.box, at: t)
 
-            let x = Double(box.midX)
-            times.append(t)
-            xs.append(x)
-            ys.append(Double(box.midY))
-
+            let x = Double(step.box.midX)
             if x < 0.015 { end = t; reason = "you reached the left edge"; break }
 
-            if lostSince == nil, t - seedTime >= stallWindow,
+            let times = follower.times, xs = follower.xs
+            if follower.lostSince == nil, t - times[0] >= stallWindow,
                let from = times.firstIndex(where: { $0 >= t - stallWindow }),
                xs[from] - x < stallDistance {
                 // End where you were furthest along, just as you turned off it.
@@ -208,6 +177,7 @@ enum WaveTracker {
                 break
             }
         }
+        let times = follower.times, xs = follower.xs, ys = follower.ys
         guard !times.isEmpty else { throw Failure.unreadable }
         let rideEnd = end ?? times[times.count - 1]
         log?(String(format: "end,%@,%.3f", reason, rideEnd))
@@ -225,6 +195,51 @@ enum WaveTracker {
         return WaveTrack(start: times[0], end: rideEnd, step: Double(every) / fps,
                          xs: picked.map { smooth(xs, $0) }, ys: picked.map { smooth(ys, $0) },
                          height: Float(seed.height))
+    }
+
+    /// Follows you from where you were tapped back to the bookmark, and hands
+    /// over that stretch, in time order, to carry on forwards from. Video can
+    /// only be read forwards, so it is read a short piece at a time, from the
+    /// last piece to the first, and each piece played backwards.
+    private static func followBack(_ frames: Frames, from seedTime: Double, to start: Double, seed: CGRect,
+                                   log: ((String) -> Void)?) throws -> Follower {
+        let fps = Double(Frames.rate)
+        var follower = Follower(seed: seed, picture: frames.picture, orientation: .up)
+        var pieceEnd = seedTime
+        reading: while pieceEnd > start + 0.5 / fps {
+            let pieceStart = max(start, pieceEnd - backPiece)
+            let (reader, output) = try frames.reader(from: pieceStart, seconds: pieceEnd - pieceStart, copies: true)
+            var piece: [(Double, CVPixelBuffer)] = []
+            while let sample = output.copyNextSampleBuffer() {
+                let t = sample.presentationTimeStamp.seconds
+                guard t >= pieceStart - 0.5 / fps, t < pieceEnd - 0.5 / fps, let buffer = sample.imageBuffer else { continue }
+                piece.append((t, buffer))
+            }
+            reader.cancelReading()
+            for (t, buffer) in piece.reversed() {
+                try Task.checkCancellation()
+                guard let luma = Luma(buffer), let step = try follower.follow(buffer, luma: luma, at: t) else {
+                    break reading
+                }
+                // Lost for good going back: stay where you were last seen.
+                var box = step.box
+                if let since = follower.lostSince, since - t >= lostFor, let x = follower.xs.last, let y = follower.ys.last {
+                    box = riderBox(at: CGPoint(x: x, y: y), picture: frames.picture)
+                }
+                box.origin.x = min(max(box.origin.x, -box.width / 2), 1 - box.width / 2)
+                box.origin.y = min(max(box.origin.y, -box.height / 2), 1 - box.height / 2)
+                log?("back" + step.line(t).dropFirst("frame".count))
+                follower.record(box, at: t)
+            }
+            pieceEnd = pieceStart
+        }
+        // Forwards from here, a fresh tracker with the way back as your
+        // history, in time order.
+        var forward = Follower(seed: seed, picture: frames.picture, orientation: .up)
+        forward.times = follower.times.reversed()
+        forward.xs = follower.xs.reversed()
+        forward.ys = follower.ys.reversed()
+        return forward
     }
 
     // MARK: Finding you at the bookmark
@@ -306,7 +321,7 @@ enum WaveTracker {
     }
 
     /// Centers of the dark shapes that changed between the two frames.
-    private static func movingDarkShapes(now: Luma, before: Luma,
+    fileprivate static func movingDarkShapes(now: Luma, before: Luma,
                                          orientation: CGImagePropertyOrientation) -> [CGPoint] {
         let w = now.width, h = now.height
         guard before.width == w, before.height == h else { return [] }
@@ -353,20 +368,21 @@ enum WaveTracker {
     }
 
     /// A box the size of a surfer, centered on a point.
-    private static func riderBox(at p: CGPoint, picture: CGSize) -> CGRect {
+    fileprivate static func riderBox(at p: CGPoint, picture: CGSize) -> CGRect {
         let h = CGFloat(riderHeight)
         let w = h * picture.height / max(1, picture.width) * 0.9
         return CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
     }
 
-    /// Where your last second of travel puts you at time `t`.
-    private static func predicted(at t: Double, times: [Double], xs: [Double], ys: [Double]) -> CGPoint? {
+    /// Where your last second of travel puts you at time `t`, whether you're
+    /// being followed forwards or backwards.
+    fileprivate static func predicted(at t: Double, times: [Double], xs: [Double], ys: [Double]) -> CGPoint? {
         guard let lastTime = times.last else { return nil }
-        let from = times.firstIndex { $0 >= lastTime - 1 } ?? 0
+        let from = times.firstIndex { abs($0 - lastTime) <= 1 } ?? 0
         let span = lastTime - times[from]
         let n = times.count - 1
-        let vx = span > 0.2 ? (xs[n] - xs[from]) / span : 0
-        let vy = span > 0.2 ? (ys[n] - ys[from]) / span : 0
+        let vx = abs(span) > 0.2 ? (xs[n] - xs[from]) / span : 0
+        let vy = abs(span) > 0.2 ? (ys[n] - ys[from]) / span : 0
         return CGPoint(x: xs[n] + vx * (t - lastTime), y: ys[n] + vy * (t - lastTime))
     }
 
@@ -385,7 +401,7 @@ enum WaveTracker {
         /// work. The path is smoothed over half a second anyway.
         static let rate = 15
 
-        func reader(from start: Double, seconds: Double) throws -> (AVAssetReader, AVAssetReaderVideoCompositionOutput) {
+        func reader(from start: Double, seconds: Double, copies: Bool = false) throws -> (AVAssetReader, AVAssetReaderVideoCompositionOutput) {
             let scale = min(1, Self.lines / max(1, min(picture.width, picture.height)))
             let composition = AVMutableVideoComposition()
             composition.renderSize = CGSize(width: (picture.width * scale / 2).rounded() * 2,
@@ -403,7 +419,7 @@ enum WaveTracker {
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             ])
             output.videoComposition = composition
-            output.alwaysCopiesSampleData = false
+            output.alwaysCopiesSampleData = copies
             reader.add(output)
             // Never past the end of the video, or the reader refuses to start.
             let from = CMTime(seconds: start, preferredTimescale: 60000)
@@ -417,11 +433,11 @@ enum WaveTracker {
     // MARK: Coordinates
 
     /// Vision measures from the bottom-left; everything else here from the top-left.
-    private static func visionRect(_ r: CGRect) -> CGRect {
+    fileprivate static func visionRect(_ r: CGRect) -> CGRect {
         CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height)
     }
 
-    private static func topLeftRect(_ r: CGRect) -> CGRect {
+    fileprivate static func topLeftRect(_ r: CGRect) -> CGRect {
         CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height)
     }
 
@@ -443,6 +459,88 @@ enum WaveTracker {
         case .down: CGPoint(x: 1 - p.x, y: 1 - p.y)
         default: p
         }
+    }
+}
+
+/// Apple's tracker, kept on you frame after frame, and picked back up from
+/// where your speed says you should be whenever it loses you. Frames may come
+/// forwards or backwards in time.
+private struct Follower {
+    struct Step {
+        var box: CGRect
+        let confidence: Float
+        let dark: Double
+        var note: String
+
+        func line(_ t: Double) -> String {
+            String(format: "frame,%.3f,%.4f,%.4f,%.3f,%.2f,%@", t, box.midX, box.midY, confidence, dark, note)
+        }
+    }
+
+    let picture: CGSize
+    let orientation: CGImagePropertyOrientation
+    private let sequence = VNSequenceRequestHandler()
+    private var last: VNDetectedObjectObservation
+    private var previous: CGRect?
+    private var frozen = 0
+    private var recent: [Luma] = []
+    var times: [Double] = []
+    var xs: [Double] = []
+    var ys: [Double] = []
+    /// When you were lost, if you still are.
+    private(set) var lostSince: Double?
+
+    init(seed: CGRect, picture: CGSize, orientation: CGImagePropertyOrientation) {
+        self.picture = picture
+        self.orientation = orientation
+        last = VNDetectedObjectObservation(boundingBox: WaveTracker.visionRect(seed))
+    }
+
+    /// Where you are in this frame; nil if the tracker gave up altogether.
+    mutating func follow(_ buffer: CVPixelBuffer, luma: Luma, at t: Double) throws -> Step? {
+        recent.append(luma)
+        if recent.count > WaveTracker.compareFrames + 1 { recent.removeFirst() }
+
+        let request = VNTrackObjectRequest(detectedObjectObservation: last)
+        request.trackingLevel = .accurate
+        try sequence.perform([request], on: buffer, orientation: orientation)
+        guard let found = request.results?.first as? VNDetectedObjectObservation else { return nil }
+        last = found
+        var box = WaveTracker.topLeftRect(found.boundingBox)
+        frozen = previous.map { abs($0.midX - box.midX) < 1e-6 && abs($0.midY - box.midY) < 1e-6 } == true ? frozen + 1 : 0
+        previous = box
+        let dark = luma.darkShare(in: box, orientation: orientation)
+        var note = "ok"
+
+        if found.confidence < WaveTracker.lostConfidence || frozen >= 2 || dark < WaveTracker.emptyBox {
+            note = found.confidence < WaveTracker.lostConfidence ? "low" : frozen >= 2 ? "frozen" : "empty"
+            let guess = WaveTracker.predicted(at: t, times: times, xs: xs, ys: ys)
+            let reach = WaveTracker.searchReach
+            if let guess, recent.count > WaveTracker.compareFrames,
+               let p = WaveTracker.movingDarkShapes(now: luma, before: recent[0], orientation: orientation)
+                   .filter({ abs($0.x - guess.x) < reach && abs($0.y - guess.y) < reach })
+                   .min(by: { hypot($0.x - guess.x, $0.y - guess.y) < hypot($1.x - guess.x, $1.y - guess.y) }) {
+                box = WaveTracker.riderBox(at: p, picture: picture)
+                last = VNDetectedObjectObservation(boundingBox: WaveTracker.visionRect(box))
+                previous = nil
+                frozen = 0
+                lostSince = nil
+                note += "+found"
+            } else {
+                if lostSince == nil { lostSince = t }
+                // Until you're found again, carry on where your speed says.
+                if let guess { box = WaveTracker.riderBox(at: guess, picture: picture) }
+            }
+        } else {
+            lostSince = nil
+        }
+        return Step(box: box, confidence: found.confidence, dark: dark, note: note)
+    }
+
+    mutating func record(_ box: CGRect, at t: Double) {
+        times.append(t)
+        xs.append(Double(box.midX))
+        ys.append(Double(box.midY))
     }
 }
 

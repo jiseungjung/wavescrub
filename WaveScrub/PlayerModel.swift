@@ -492,18 +492,19 @@ final class PlayerModel: ObservableObject {
         startTracking(wave, tap: nil, asset: asset, key: videoKey)
     }
 
-    /// You tapped yourself at the bookmark: follow whoever is there instead.
-    /// `point` is a fraction of the picture, from its top-left.
-    func retrack(_ id: Wave.ID, tappedAt point: CGPoint) {
+    /// You tapped yourself, on the bookmark's frame or one a little after it:
+    /// follow whoever is there instead. `point` is a fraction of the picture,
+    /// from its top-left.
+    func retrack(_ id: Wave.ID, tappedAt point: CGPoint, time: Double) {
         guard let asset, let videoKey, let wave = waves.first(where: { $0.id == id }) else { return }
         stopTracking()
         tracks[id] = nil
         unfoundWaveIDs.remove(id)
         saveTracks()
-        startTracking(wave, tap: point, asset: asset, key: videoKey)
+        startTracking(wave, tap: (point, time), asset: asset, key: videoKey)
     }
 
-    private func startTracking(_ wave: Wave, tap: CGPoint?, asset: AVAsset, key: String) {
+    private func startTracking(_ wave: Wave, tap: (point: CGPoint, time: Double)?, asset: AVAsset, key: String) {
         let run = UUID()
         trackingRun = run
         trackingWaveID = wave.id
