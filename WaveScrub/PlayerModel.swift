@@ -309,6 +309,7 @@ final class PlayerModel: ObservableObject {
             self.waves = Self.loadWaves(key: key)
             self.tracks = Self.loadTracks(key: key)
             self.unfoundWaveIDs = []
+            self.unextendableWaveIDs = []
             self.selectedWaveID = nil
         } catch {
             loadingMessage = nil
@@ -488,8 +489,46 @@ final class PlayerModel: ObservableObject {
     func trackPending() {
         guard trackingTask == nil, let asset, let videoKey else { return }
         let waiting = waves.filter { tracks[$0.id] == nil && !unfoundWaveIDs.contains($0.id) }
-        guard let wave = waiting.first(where: { $0.id == priorityWaveID }) ?? waiting.first else { return }
-        startTracking(wave, tap: nil, asset: asset, key: videoKey)
+        if let wave = waiting.first(where: { $0.id == priorityWaveID }) ?? waiting.first {
+            startTracking(wave, tap: nil, asset: asset, key: videoKey)
+            return
+        }
+        // Then paths saved before you were followed backwards, which start a
+        // moment after their bookmark.
+        let late = waves.filter { wave in
+            tracks[wave.id].map { $0.start > wave.time + 0.05 } == true && !unextendableWaveIDs.contains(wave.id)
+        }
+        if let wave = late.first(where: { $0.id == priorityWaveID }) ?? late.first, let track = tracks[wave.id] {
+            extendBack(wave, track: track, asset: asset)
+        }
+    }
+
+    /// Waves whose path couldn't be followed back to the bookmark; not tried
+    /// again until the video is opened again.
+    private var unextendableWaveIDs: Set<Wave.ID> = []
+
+    private func extendBack(_ wave: Wave, track: WaveTrack, asset: AVAsset) {
+        let run = UUID()
+        trackingRun = run
+        trackingWaveID = wave.id
+        trackingTask = Task.detached(priority: .utility) { [weak self] in
+            let longer = try? await WaveTracker.extendBack(track, asset: asset, to: wave.time)
+            await self?.finishExtending(wave.id, run: run, from: track, to: longer)
+        }
+    }
+
+    private func finishExtending(_ id: Wave.ID, run: UUID, from old: WaveTrack, to longer: WaveTrack?) {
+        guard run == trackingRun else { return }
+        trackingTask = nil
+        trackingWaveID = nil
+        // Only if the path wasn't replaced (by a tap) in the meantime.
+        if let longer, tracks[id] == old, longer.start < old.start {
+            tracks[id] = longer
+            saveTracks()
+        } else {
+            unextendableWaveIDs.insert(id)
+        }
+        trackPending()
     }
 
     /// You tapped yourself, on the bookmark's frame or one a little after it:

@@ -106,14 +106,8 @@ enum WaveTracker {
     /// ended. Only the Mac test run uses it.
     static func track(asset: AVAsset, from start: Double, tap: (point: CGPoint, time: Double)?,
                       log: ((String) -> Void)? = nil) async throws -> WaveTrack {
-        guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
-        let (natural, transform) = try await videoTrack.load(.naturalSize, .preferredTransform)
-        let duration = try await asset.load(.duration)
-        let fps = Double(Frames.rate)
-        let turned = CGRect(origin: .zero, size: natural).applying(transform)
-        let picture = CGSize(width: abs(turned.width), height: abs(turned.height))
-        let frames = Frames(asset: asset, track: videoTrack, transform: transform, picture: picture,
-                            duration: duration)
+        let frames = try await Frames(asset: asset)
+        let fps = Double(Frames.rate), picture = frames.picture
         // Frames arrive already turned the right way up.
         let orientation = CGImagePropertyOrientation.up
 
@@ -195,6 +189,35 @@ enum WaveTracker {
         return WaveTrack(start: times[0], end: rideEnd, step: Double(every) / fps,
                          xs: picked.map { smooth(xs, $0) }, ys: picked.map { smooth(ys, $0) },
                          height: Float(seed.height))
+    }
+
+    /// A path worked out before you were followed backwards starts where you
+    /// were first found, a third of a second after the bookmark. This follows
+    /// you back from there to the bookmark and puts that in front, leaving
+    /// the rest of the path, and whoever it follows, as it was.
+    static func extendBack(_ track: WaveTrack, asset: AVAsset, to start: Double) async throws -> WaveTrack {
+        let frames = try await Frames(asset: asset)
+        let fps = Double(Frames.rate)
+        guard track.start > start + 0.5 / fps, !track.xs.isEmpty else { return track }
+        let seed = riderBox(at: track.center(at: track.start), picture: frames.picture)
+        let back = try followBack(frames, from: track.start, to: start, seed: seed, log: nil)
+        guard !back.times.isEmpty else { return track }
+        // Smoothed as the rest of the path was, and joined onto it without a
+        // jump: the gap where they meet is spread over the stretch added.
+        let n = back.times.count, half = max(1, Int(fps / 2))
+        func smooth(_ v: [Double], _ i: Int) -> Double {
+            let lo = max(0, i - half), hi = min(n - 1, i + half)
+            return v[lo...hi].reduce(0, +) / Double(hi - lo + 1)
+        }
+        let gapX = Double(track.xs[0]) - smooth(back.xs, n - 1)
+        let gapY = Double(track.ys[0]) - smooth(back.ys, n - 1)
+        let xs = (0..<n).map { Float(smooth(back.xs, $0) + gapX * Double($0 + 1) / Double(n)) }
+        let ys = (0..<n).map { Float(smooth(back.ys, $0) + gapY * Double($0 + 1) / Double(n)) }
+        var longer = track
+        longer.start = track.start - Double(n) * track.step
+        longer.xs = xs + track.xs
+        longer.ys = ys + track.ys
+        return longer
     }
 
     /// Follows you from where you were tapped back to the bookmark, and hands
@@ -395,6 +418,17 @@ enum WaveTracker {
         let transform: CGAffineTransform
         let picture: CGSize
         let duration: CMTime
+
+        init(asset: AVAsset) async throws {
+            guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
+            let (natural, transform) = try await track.load(.naturalSize, .preferredTransform)
+            let turned = CGRect(origin: .zero, size: natural).applying(transform)
+            self.asset = asset
+            self.track = track
+            self.transform = transform
+            picture = CGSize(width: abs(turned.width), height: abs(turned.height))
+            duration = try await asset.load(.duration)
+        }
 
         static let lines: CGFloat = 1080
         /// Frames a second looked at: half of what was filmed, which halves the
