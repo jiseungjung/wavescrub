@@ -1,4 +1,41 @@
 import AVFoundation
+import CoreImage
+
+/// The part of the picture shown while following the surfer: how much of it
+/// fits on screen, and how far the view has been dragged off them.
+struct FollowView: Equatable, Sendable {
+    var track: WaveTrack
+    /// How much of the picture's width and height is shown, as a share of it:
+    /// more than 1 when zoomed out past its edges.
+    var shownW: CGFloat
+    var shownH: CGFloat
+    /// Where the view has been dragged to, as a share of what's shown.
+    var look: CGPoint = .zero
+
+    /// The part shown at this moment, as fractions of the upright picture from
+    /// its top-left.
+    ///
+    /// Never past the picture's edge. A surfer starts a wave at its right
+    /// edge, so the view waits there until they come into the middle; held
+    /// to the edge frame by frame it then set off at their full speed in
+    /// one jolt, and at a wide zoom it caught and let go of the top as they
+    /// rose and dropped. Averaged over a second around now, it eases off
+    /// the edge and back onto it instead, and is still exactly on them in
+    /// between. Once the whole width or height is in view, that way the
+    /// picture just sits in the middle, and they're only followed the other way.
+    func rect(at time: Double) -> CGRect {
+        var left: CGFloat = 0, top: CGFloat = 0
+        let offsets = (-5...5).map { Double($0) * 0.1 }
+        for offset in offsets {
+            var c = track.center(at: time + offset)
+            c.x += look.x * shownW
+            c.y += look.y * shownH
+            left += shownW >= 1 ? (1 - shownW) / 2 : min(max(0, c.x - shownW / 2), 1 - shownW)
+            top += shownH >= 1 ? (1 - shownH) / 2 : min(max(0, c.y - shownH / 2), 1 - shownH)
+        }
+        return CGRect(x: left / CGFloat(offsets.count), y: top / CGFloat(offsets.count), width: shownW, height: shownH)
+    }
+}
 
 /// The loop's frames around where you're sliding, decoded ahead so sliding
 /// through them is smooth.
@@ -8,17 +45,22 @@ import AVFoundation
 /// decodes everything from the last whole picture up to it, so sliding
 /// asked for that over and over and fell behind. Here each second, whole
 /// picture to whole picture, is decoded once in one go, and the seconds
-/// either side are got ready while you look. They are kept at half size,
-/// which is plenty while you slide; the player's own sharp frame follows
-/// once you stop.
+/// either side are got ready while you look.
+///
+/// Only the part around the surfer is kept, with a margin, at the video's
+/// full detail (or the screen's, if that's less): shrinking whole 4K frames
+/// enough to keep a few seconds of them made the zoomed-in view blurry. If
+/// the zoom or the view moves past the margin, they're made again.
 final class LoopFrames: @unchecked Sendable {
-    typealias Frame = (time: Double, buffer: CVPixelBuffer)
+    /// `region` is the part of the upright picture a frame holds, as
+    /// fractions of it; without one the frame is the whole picture as stored.
+    typealias Frame = (time: Double, buffer: CVPixelBuffer, region: CGRect?)
 
     private let queue = DispatchQueue(label: "LoopFrames", qos: .userInitiated)
     private let lock = NSLock()
+    private let context = CIContext(options: [.cacheIntermediates: false])
     private var asset: AVAsset?
     private var track: AVAssetTrack?
-    private var size = CGSize.zero
     private var range = CMTimeRange.zero
     /// Where each second starts: the loop's start, then each whole picture.
     private var starts: [Double] = []
@@ -28,16 +70,23 @@ final class LoopFrames: @unchecked Sendable {
     private var wanted = 0
     private var direction = 1
     private var run = 0
+    /// What's being shown, and on how many screen pixels top to bottom.
+    private var view: FollowView?
+    private var pixels: CGFloat = 0
+    private var orientation = CGImagePropertyOrientation.up
+    /// Changes whenever frames already made no longer fit what's shown.
+    private var viewRun = 0
 
     /// How many seconds are kept either side of where you are.
     private let reach: Int
-    /// The frames' size, as a share of the video's.
-    private let scale: CGFloat
+    /// How much more than what's shown each frame keeps, each side, as a
+    /// share of it: room to pinch and drag a little before remaking them.
+    private static let margin: CGFloat = 0.15
+    static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+    /// The most pixels a frame keeps, however big the screen: 1080p's worth.
+    private static let maxPixels: CGFloat = 1920 * 1080
 
-    /// Two clips side by side keep fewer, smaller frames each: they're only
-    /// half the screen, and two full sets would run the phone out of memory.
-    init(scale: CGFloat = 0.5, reach: Int = 2) {
-        self.scale = scale
+    init(reach: Int = 2) {
         self.reach = reach
     }
 
@@ -51,11 +100,33 @@ final class LoopFrames: @unchecked Sendable {
         starts = []
         seconds = [:]
         decoding = nil
+        view = nil
         range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
                             end: CMTime(seconds: end, preferredTimescale: 60000))
         lock.unlock()
         guard let asset else { return }
         queue.async { [weak self] in self?.findSeconds(asset, run: run) }
+    }
+
+    /// What's on screen now. Frames are made for it once it's known, and
+    /// made again if the zoom, the view or the screen changes past the margin.
+    func follow(_ new: FollowView, pixels newPixels: CGFloat, orientation newOrientation: CGImagePropertyOrientation) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let view, view.track == new.track, orientation == newOrientation,
+           abs(log(new.shownH / view.shownH)) < 0.2,
+           abs(new.look.x - view.look.x) < Self.margin * 0.7,
+           abs(new.look.y - view.look.y) < Self.margin * 0.7,
+           abs(log(max(1, newPixels) / max(1, pixels))) < 0.2 {
+            return
+        }
+        view = new
+        pixels = newPixels
+        orientation = newOrientation
+        viewRun += 1
+        seconds = [:]
+        decoding = nil
+        pump()
     }
 
     /// The decoded frame showing at this moment, if its second is ready. Asks
@@ -78,10 +149,8 @@ final class LoopFrames: @unchecked Sendable {
     private func findSeconds(_ asset: AVAsset, run: Int) {
         let semaphore = DispatchSemaphore(value: 0)
         var found: AVAssetTrack?
-        var natural = CGSize.zero
         Task {
             found = try? await asset.loadTracks(withMediaType: .video).first
-            natural = (try? await found?.load(.naturalSize)) ?? .zero
             semaphore.signal()
         }
         semaphore.wait()
@@ -106,49 +175,88 @@ final class LoopFrames: @unchecked Sendable {
         guard run == self.run else { return }
         self.starts = starts
         track = found
-        size = CGSize(width: (natural.width * scale).rounded(), height: (natural.height * scale).rounded())
         pump()
     }
 
     /// Decodes the next missing second nearest where you are, going your way
     /// first. Called with the lock held.
     private func pump() {
-        guard decoding == nil, let asset, let track, !starts.isEmpty else { return }
+        guard decoding == nil, let asset, let track, let view, !starts.isEmpty else { return }
         let order = [0, direction, -direction, 2 * direction, -2 * direction].map { wanted + $0 }
-        guard let next = order.first(where: { starts.indices.contains($0) && seconds[$0] == nil }) else { return }
+        guard let next = order.first(where: {
+            starts.indices.contains($0) && seconds[$0] == nil && abs($0 - wanted) <= reach
+        }) else { return }
         decoding = next
         let from = starts[next]
         let to = next + 1 < starts.count ? starts[next + 1] : range.end.seconds
-        let size = size, run = run
+        let run = run, viewRun = viewRun, pixels = pixels, orientation = orientation
         queue.async { [weak self] in
-            let frames = Self.decode(asset, track: track, size: size, from: from, to: to)
             guard let self else { return }
+            let frames = self.decode(asset, track: track, from: from, to: to,
+                                     view: view, pixels: pixels, orientation: orientation)
             self.lock.lock()
             defer { self.lock.unlock() }
-            guard run == self.run else { return }
+            guard run == self.run, viewRun == self.viewRun else { return }
             self.decoding = nil
             if abs(next - self.wanted) <= self.reach { self.seconds[next] = frames }
             self.pump()
         }
     }
 
-    private static func decode(_ asset: AVAsset, track: AVAssetTrack, size: CGSize, from: Double, to: Double) -> [Frame] {
+    /// Each frame upright, cut to what's shown and its margin, at the video's
+    /// detail or the screen's, whichever is less.
+    private func decode(_ asset: AVAsset, track: AVAssetTrack, from: Double, to: Double,
+                        view: FollowView, pixels: CGFloat, orientation: CGImagePropertyOrientation) -> [Frame] {
         guard let reader = try? AVAssetReader(asset: asset) else { return [] }
         reader.timeRange = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 60000),
                                        end: CMTime(seconds: to, preferredTimescale: 60000))
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-            kCVPixelBufferWidthKey as String: Int(size.width),
-            kCVPixelBufferHeightKey as String: Int(size.height),
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
         ])
         output.alwaysCopiesSampleData = false
         reader.add(output)
         guard reader.startReading() else { return [] }
+        let m = Self.margin
+        let black = CIImage(color: .black)
+        var pool: CVPixelBufferPool?
+        var outSize = CGSize.zero
         var frames: [Frame] = []
         while let sample = output.copyNextSampleBuffer() {
-            guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
-            frames.append((CMSampleBufferGetPresentationTimeStamp(sample).seconds, buffer))
+            guard let source = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+            let image = CIImage(cvPixelBuffer: source).oriented(orientation)
+            let w = image.extent.width, h = image.extent.height
+            let shown = view.rect(at: time)
+            let region = shown.insetBy(dx: -shown.width * m, dy: -shown.height * m)
+            // The same size every frame: what's shown never changes size.
+            if pool == nil {
+                let sourceH = region.height * h
+                var scale = min(1, pixels * (1 + 2 * m) / sourceH)
+                let area = region.width * w * region.height * h * scale * scale
+                if area > Self.maxPixels { scale *= sqrt(Self.maxPixels / area) }
+                outSize = CGSize(width: max(2, (region.width * w * scale / 2).rounded() * 2),
+                                 height: max(2, (region.height * h * scale / 2).rounded() * 2))
+                CVPixelBufferPoolCreate(nil, nil, [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                    kCVPixelBufferWidthKey as String: Int(outSize.width),
+                    kCVPixelBufferHeightKey as String: Int(outSize.height),
+                    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+                ] as CFDictionary, &pool)
+            }
+            guard let pool else { break }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+            guard let buffer else { continue }
+            // Core Image measures from the bottom-left.
+            let crop = CGRect(x: image.extent.minX + region.minX * w,
+                              y: image.extent.minY + (1 - region.maxY) * h,
+                              width: region.width * w, height: region.height * h)
+            let piece = image.composited(over: black).cropped(to: crop)
+                .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY)
+                    .concatenating(CGAffineTransform(scaleX: outSize.width / crop.width, y: outSize.height / crop.height)))
+            context.render(piece, to: buffer, bounds: CGRect(origin: .zero, size: outSize), colorSpace: Self.sRGB)
+            frames.append((time, buffer, region))
         }
         return frames
     }

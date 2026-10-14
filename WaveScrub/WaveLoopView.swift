@@ -281,7 +281,7 @@ final class LoopPlayer: ObservableObject {
     /// A compact player is one of two side by side: silent, and keeping
     /// smaller frames for sliding.
     init(compact: Bool = false) {
-        frames = compact ? LoopFrames(scale: 0.25, reach: 1) : LoopFrames()
+        frames = compact ? LoopFrames(reach: 1) : LoopFrames()
         player.isMuted = compact
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
@@ -367,6 +367,12 @@ final class LoopPlayer: ObservableObject {
     }
 
     var isPlaying: Bool { player.rate != 0 }
+
+    /// What the view shows of the picture while following, so frames for
+    /// sliding are made to fit it.
+    func follow(_ view: FollowView, pixels: CGFloat, orientation: CGImagePropertyOrientation) {
+        frames.follow(view, pixels: pixels, orientation: orientation)
+    }
 
     func play() {
         slideFrame = nil
@@ -538,6 +544,8 @@ final class FollowingPlayerView: UIView {
     private var drawnFrame: LoopFrames.Frame?
     private var needsRedraw = false
 
+    private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+
     /// How many surfers fit top to bottom, at zoom 1: what the clips cut by
     /// hand showed.
     static let heightsInView = 9.0
@@ -662,7 +670,7 @@ final class FollowingPlayerView: UIView {
             var shownAt = CMTime.zero
             if output.hasNewPixelBuffer(forItemTime: itemTime),
                let buffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &shownAt) {
-                playerFrame = (shownAt.seconds, buffer)
+                playerFrame = (shownAt.seconds, buffer, nil)
             }
         }
         // While sliding, the frame got ready, until the player catches up
@@ -675,45 +683,40 @@ final class FollowingPlayerView: UIView {
         guard let frame, needsRedraw || frame.buffer !== drawnFrame?.buffer else { return }
         needsRedraw = false
         drawnFrame = frame
-        draw(frame.buffer, at: frame.time, following: track)
+        draw(frame, following: track)
     }
 
-    private func draw(_ buffer: CVPixelBuffer, at time: Double, following track: WaveTrack) {
-        // Frames arrive as the camera stored them: on their side for a phone
-        // held upright, upside down for one turned the other way.
-        let image = CIImage(cvPixelBuffer: buffer).oriented(orientation)
-        let w = image.extent.width, h = image.extent.height
-        pictureAspect = w / h
+    private func draw(_ frame: LoopFrames.Frame, following track: WaveTrack) {
+        // Frames from the player arrive as the camera stored them: on their
+        // side for a phone held upright, upside down for one turned the other
+        // way. Those got ready for sliding are already upright, and only the
+        // part around the surfer.
+        let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let region = frame.region ?? whole
+        let image = frame.region == nil
+            ? CIImage(cvPixelBuffer: frame.buffer).oriented(orientation)
+            : CIImage(cvPixelBuffer: frame.buffer, options: [.colorSpace: Self.sRGB])
+        if frame.region == nil {
+            pictureAspect = image.extent.width / image.extent.height
+        } else if videoSize.height > 0 {
+            pictureAspect = videoSize.width / videoSize.height
+        }
+        // How many pixels the whole picture would be, in this image's pixels.
+        let w = image.extent.width / region.width, h = image.extent.height / region.height
 
         // What part of the picture to show, as fractions of it, from the top-left.
         // Zoomed out past an edge of the picture, the rest is black, out to
         // where the whole picture fits.
-        let center = track.center(at: time)
         let shownH = min(CGFloat(Double(track.height) * Self.heightsInView / zoom), wholeHeight)
-        let shownW = shownH * (bounds.width / bounds.height) * (h / w)
-        // Never past the picture's edge. A surfer starts a wave at its right
-        // edge, so the view waits there until they come into the middle; held
-        // to the edge frame by frame it then set off at their full speed in
-        // one jolt, and at a wide zoom it caught and let go of the top as they
-        // rose and dropped. Averaged over a second around now, it eases off
-        // the edge and back onto it instead, and is still exactly on them in
-        // between. Once the whole width or height is in view, that way the
-        // picture just sits in the middle, and they're only followed the other way.
-        var left: CGFloat = 0, top: CGFloat = 0
-        let offsets = (-5...5).map { Double($0) * 0.1 }
-        for offset in offsets {
-            var c = offset == 0 ? center : track.center(at: time + offset)
-            c.x += lookOffset.x * shownW
-            c.y += lookOffset.y * shownH
-            left += shownW >= 1 ? (1 - shownW) / 2 : min(max(0, c.x - shownW / 2), 1 - shownW)
-            top += shownH >= 1 ? (1 - shownH) / 2 : min(max(0, c.y - shownH / 2), 1 - shownH)
-        }
-        left /= CGFloat(offsets.count)
-        top /= CGFloat(offsets.count)
-        // Core Image measures from the bottom-left.
-        let crop = CGRect(x: image.extent.minX + left * w, y: image.extent.minY + (1 - top - shownH) * h,
-                          width: shownW * w, height: shownH * h)
+        let shownW = shownH * (bounds.width / bounds.height) / pictureAspect
+        let view = FollowView(track: track, shownW: shownW, shownH: shownH, look: lookOffset)
         let pixels = bounds.height * traitCollection.displayScale
+        loop?.follow(view, pixels: pixels, orientation: orientation)
+        let shown = view.rect(at: frame.time)
+        // Core Image measures from the bottom-left.
+        let crop = CGRect(x: image.extent.minX + (shown.minX - region.minX) * w,
+                          y: image.extent.minY + (region.maxY - shown.maxY) * h,
+                          width: shown.width * w, height: shown.height * h)
         var piece = image.cropped(to: crop)
         if !image.extent.contains(crop) {
             piece = image.composited(over: CIImage(color: .black)).cropped(to: crop)
