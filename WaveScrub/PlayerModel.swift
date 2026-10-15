@@ -5,20 +5,34 @@ import Photos
 import SwiftUI
 import UIKit
 
-/// A marked wave: where it starts, what you called it, and its color.
+/// A marked wave: where it starts, who rode it, and what it's called.
+///
+/// `name` and `color` are worked out from the surfer (their name and their
+/// count, in time order) unless the wave was given a name of its own; they
+/// are stored too so older versions of the app still read them.
 struct Wave: Codable, Identifiable, Equatable {
     var id = UUID()
     var name: String
     var time: Double
     var color: WaveColor = .cyan
+    var surferID: Surfer.ID?
+    /// A name typed for this one wave, in place of the surfer's count.
+    var customName: String?
+    var starred = false
 
-    enum CodingKeys: String, CodingKey { case id, name, time, color }
+    enum CodingKeys: String, CodingKey { case id, name, time, color, surferID, customName, starred }
 
-    init(id: UUID = UUID(), name: String, time: Double, color: WaveColor = .cyan) {
+    /// The name as shown, with a star in front of a starred wave.
+    var title: String { starred ? "★ " + name : name }
+
+    init(id: UUID = UUID(), name: String, time: Double, color: WaveColor = .cyan,
+         surferID: Surfer.ID? = nil, customName: String? = nil) {
         self.id = id
         self.name = name
         self.time = time
         self.color = color
+        self.surferID = surferID
+        self.customName = customName
     }
 
     init(from decoder: Decoder) throws {
@@ -27,6 +41,23 @@ struct Wave: Codable, Identifiable, Equatable {
         name = try c.decode(String.self, forKey: .name)
         time = try c.decode(Double.self, forKey: .time)
         color = try c.decodeIfPresent(WaveColor.self, forKey: .color) ?? .cyan
+        surferID = try c.decodeIfPresent(UUID.self, forKey: .surferID)
+        customName = try c.decodeIfPresent(String.self, forKey: .customName)
+        starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
+    }
+}
+
+/// Someone surfing in a video. A video always has at least one: you, with no
+/// name until you give one, so your waves are just Wave 1, Wave 2…
+struct Surfer: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var color: WaveColor
+
+    /// What their waves are called, before the number.
+    var label: String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "Wave" : trimmed
     }
 }
 
@@ -86,6 +117,10 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var thumbnails: [UIImage?] = []
     @Published private(set) var loadingMessage: String?
     @Published private(set) var waves: [Wave] = []
+    /// Who's surfing in this video; the first is you.
+    @Published private(set) var surfers: [Surfer] = []
+    /// The people sheet, opened from the top bar or a wave's dot.
+    @Published var showingPeople = false
     @Published var selectedWaveID: Wave.ID?
     @Published private(set) var recents: [RecentVideo] = []
     @Published var errorMessage: String?
@@ -290,7 +325,7 @@ final class PlayerModel: ObservableObject {
             self.videoSize = info.size
             self.videoOrientation = info.orientation
             self.videoKey = key
-            self.waves = Self.loadWaves(key: key)
+            (self.surfers, self.waves) = Self.loadWaves(key: key, defaultColor: lastWaveColor)
             self.tracks = Self.loadTracks(key: key)
             self.unfoundWaveIDs = []
             self.unextendableWaveIDs = []
@@ -417,28 +452,41 @@ final class PlayerModel: ObservableObject {
 
     // MARK: Waves
 
-    func markWave() {
-        guard hasVideo else { return }
-        let next = (waves.compactMap { Int($0.name.dropFirst("Wave ".count)) }.max() ?? 0) + 1
-        let wave = Wave(name: "Wave \(next)", time: currentTime, color: lastWaveColor)
+    /// Marks a wave here for the given surfer (you, if there's only you).
+    func markWave(for surferID: Surfer.ID? = nil) {
+        guard hasVideo, let surfer = surferID.flatMap(surfer(_:)) ?? surfers.first else { return }
+        let wave = Wave(name: "", time: currentTime, color: surfer.color, surferID: surfer.id)
         waves.append(wave)
-        waves.sort { $0.time < $1.time }
         saveWaves()
         selectedWaveID = wave.id
         trackPending()
     }
 
+    /// A name of its own for one wave; an empty name puts back the count.
     func renameWave(_ id: Wave.ID, to name: String) {
         guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
-        waves[i].name = name
+        // Typing the number it already had back in keeps it counting.
+        waves[i].customName = nil
+        if !surfers.isEmpty { Self.relabel(&waves, surfers: surfers) }
+        let automatic = waves.first { $0.id == id }?.name
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        if let j = waves.firstIndex(where: { $0.id == id }), !trimmed.isEmpty, trimmed != automatic {
+            waves[j].customName = name
+        }
         saveWaves()
     }
 
-    func setColor(_ id: Wave.ID, to color: WaveColor) {
-        guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
-        waves[i].color = color
+    /// The wave was someone else's.
+    func setSurfer(_ id: Wave.ID, to surferID: Surfer.ID) {
+        guard let i = waves.firstIndex(where: { $0.id == id }), surfer(surferID) != nil else { return }
+        waves[i].surferID = surferID
         saveWaves()
-        lastWaveColor = color
+    }
+
+    func toggleStar(_ id: Wave.ID) {
+        guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
+        waves[i].starred.toggle()
+        saveWaves()
     }
 
     func deleteWave(_ id: Wave.ID) {
@@ -448,27 +496,104 @@ final class PlayerModel: ObservableObject {
         if selectedWaveID == id { selectedWaveID = nil }
     }
 
-    func deleteWaves(at offsets: IndexSet) {
-        waves.remove(atOffsets: offsets)
+    func surfer(_ id: Surfer.ID) -> Surfer? { surfers.first { $0.id == id } }
+
+    // MARK: People
+
+    /// Adds someone to this video, in the next color nobody here has yet. You
+    /// need a name first, or nobody could tell your waves from theirs.
+    func addSurfer() {
+        guard canAddSurfer else { return }
+        let taken = Set(surfers.map(\.color))
+        let free = WaveColor.allCases.first { !taken.contains($0) } ?? .cyan
+        surfers.append(Surfer(name: "", color: free))
         saveWaves()
-        forgetTracks()
     }
 
-    /// Which color a newly marked wave gets: whatever was last picked.
+    var canAddSurfer: Bool {
+        guard let me = surfers.first else { return false }
+        return !me.name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    func renameSurfer(_ id: Surfer.ID, to name: String) {
+        guard let i = surfers.firstIndex(where: { $0.id == id }) else { return }
+        surfers[i].name = name
+        saveWaves()
+    }
+
+    func setSurferColor(_ id: Surfer.ID, to color: WaveColor) {
+        guard let i = surfers.firstIndex(where: { $0.id == id }) else { return }
+        surfers[i].color = color
+        if i == 0 { lastWaveColor = color }
+        saveWaves()
+    }
+
+    /// Takes someone out of this video. Their waves become yours, so nothing
+    /// you marked is lost.
+    func removeSurfer(_ id: Surfer.ID) {
+        guard let me = surfers.first, me.id != id else { return }
+        surfers.removeAll { $0.id == id }
+        for i in waves.indices where waves[i].surferID == id { waves[i].surferID = me.id }
+        saveWaves()
+    }
+
+    /// The color you start each new video with: whatever you last gave yourself.
     private var lastWaveColor: WaveColor {
         get { WaveColor(rawValue: UserDefaults.standard.string(forKey: Keys.lastWaveColor) ?? "") ?? .cyan }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: Keys.lastWaveColor) }
     }
 
-    private func saveWaves() {
-        guard let videoKey, let data = try? JSONEncoder().encode(waves) else { return }
-        UserDefaults.standard.set(data, forKey: "waves." + videoKey)
+    /// Puts the waves in time order, then gives each its surfer's color and
+    /// its place in that surfer's count. A wave with a name of its own still
+    /// takes up its number, so the others don't shift around it.
+    private static func relabel(_ waves: inout [Wave], surfers: [Surfer]) {
+        waves.sort { $0.time < $1.time }
+        var counts: [Surfer.ID: Int] = [:]
+        for i in waves.indices {
+            let surfer = waves[i].surferID.flatMap { id in surfers.first { $0.id == id } } ?? surfers[0]
+            waves[i].surferID = surfer.id
+            let n = (counts[surfer.id] ?? 0) + 1
+            counts[surfer.id] = n
+            waves[i].color = surfer.color
+            waves[i].name = waves[i].customName ?? "\(surfer.label) \(n)"
+        }
     }
 
+    private func saveWaves() {
+        guard let videoKey, !surfers.isEmpty else { return }
+        Self.relabel(&waves, surfers: surfers)
+        let defaults = UserDefaults.standard
+        if let data = try? JSONEncoder().encode(waves) { defaults.set(data, forKey: "waves." + videoKey) }
+        if let data = try? JSONEncoder().encode(surfers) { defaults.set(data, forKey: "surfers." + videoKey) }
+    }
+
+    /// Another video's waves, for choosing one to compare.
     static func loadWaves(key: String) -> [Wave] {
-        guard let data = UserDefaults.standard.data(forKey: "waves." + key),
-              let waves = try? JSONDecoder().decode([Wave].self, from: data) else { return [] }
-        return waves
+        loadWaves(key: key, defaultColor: .cyan).1
+    }
+
+    /// A video marked before there were people: everything was yours, and any
+    /// wave not called "Wave" and a number was named by hand.
+    private static func loadWaves(key: String, defaultColor: WaveColor) -> ([Surfer], [Wave]) {
+        let defaults = UserDefaults.standard
+        var waves = defaults.data(forKey: "waves." + key)
+            .flatMap { try? JSONDecoder().decode([Wave].self, from: $0) } ?? []
+        var surfers = defaults.data(forKey: "surfers." + key)
+            .flatMap { try? JSONDecoder().decode([Surfer].self, from: $0) } ?? []
+        if surfers.isEmpty {
+            let colors = Dictionary(grouping: waves, by: \.color)
+            let color = colors.max { $0.value.count < $1.value.count }?.key ?? defaultColor
+            surfers = [Surfer(name: "", color: color)]
+            for i in waves.indices {
+                let name = waves[i].name
+                let counted = name.hasPrefix("Wave ") && Int(name.dropFirst("Wave ".count)) != nil
+                waves[i].customName = counted ? nil : name
+            }
+        }
+        relabel(&waves, surfers: surfers)
+        if let data = try? JSONEncoder().encode(waves) { defaults.set(data, forKey: "waves." + key) }
+        if let data = try? JSONEncoder().encode(surfers) { defaults.set(data, forKey: "surfers." + key) }
+        return (surfers, waves)
     }
 
     // MARK: Following the surfer through each wave

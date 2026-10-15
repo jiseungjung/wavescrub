@@ -148,7 +148,7 @@ struct ComparePaneView: View {
                 HStack(spacing: 6) {
                     if let wave = pane.clip?.wave {
                         Circle().fill(wave.color.color).frame(width: 10, height: 10)
-                        Text(wave.name).lineLimit(1)
+                        Text(wave.title).lineLimit(1)
                     } else {
                         Text("No wave")
                     }
@@ -394,7 +394,7 @@ private struct CompareWaveList: View {
             Button { onPick(wave) } label: {
                 HStack(spacing: 10) {
                     Circle().fill(wave.color.color).frame(width: 12, height: 12)
-                    Text(wave.name).foregroundStyle(.white).lineLimit(1)
+                    Text(wave.title).foregroundStyle(.white).lineLimit(1)
                     Text(formatTime(wave.time, decimals: 0))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
