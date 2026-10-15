@@ -234,8 +234,6 @@ struct LoopTape: View {
     var body: some View {
         GeometryReader { geo in
             Canvas { ctx, size in draw(ctx, size: size) }
-                .background(Color.black.opacity(0.35))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
@@ -276,13 +274,13 @@ struct LoopTape: View {
         let t1 = t0 + span
         func x(_ t: Double) -> CGFloat { CGFloat((t - t0) * pxPerSec) }
 
-        // Grey out before the start and after the end.
-        if t0 < start {
-            ctx.fill(Path(CGRect(x: 0, y: 0, width: x(start), height: size.height)), with: .color(.black.opacity(0.5)))
-        }
-        if t1 > end {
-            ctx.fill(Path(CGRect(x: x(end), y: 0, width: size.width - x(end), height: size.height)),
-                     with: .color(.black.opacity(0.5)))
+        // The tape is only as long as the clip: past either end there's
+        // nothing over the picture.
+        let left = max(x(start), 0), right = min(x(end), size.width)
+        if right > left {
+            ctx.fill(Path(roundedRect: CGRect(x: left, y: 0, width: right - left, height: size.height),
+                          cornerRadius: 6),
+                     with: .color(.black.opacity(0.35)))
         }
 
         let major = FineTape.majorInterval(pxPerSec: pxPerSec)
