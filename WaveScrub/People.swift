@@ -93,6 +93,7 @@ struct PeopleSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+            .onDisappear { model.rememberSurfers() }
             .onAppear {
                 // Adding a person from a wave's dot with no name yet: start there.
                 if !model.canAddSurfer { focused = model.surfers.first?.id }

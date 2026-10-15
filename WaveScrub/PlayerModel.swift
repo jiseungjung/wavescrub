@@ -574,7 +574,6 @@ final class PlayerModel: ObservableObject {
         let defaults = UserDefaults.standard
         if let data = try? JSONEncoder().encode(waves) { defaults.set(data, forKey: "waves." + videoKey) }
         if let data = try? JSONEncoder().encode(surfers) { defaults.set(data, forKey: "surfers." + videoKey) }
-        rememberSurfers()
     }
 
     /// A video marked before there were people: everything was yours, and any
@@ -602,7 +601,8 @@ final class PlayerModel: ObservableObject {
     }
 
     /// Keeps everyone you've named, so they're one tap away in the next video.
-    private func rememberSurfers() {
+    /// Called when the people sheet closes, not as each letter is typed.
+    func rememberSurfers() {
         var known = knownSurfers
         for surfer in surfers.reversed() {
             let name = surfer.name.trimmingCharacters(in: .whitespaces)
