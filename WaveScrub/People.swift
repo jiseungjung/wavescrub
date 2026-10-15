@@ -78,31 +78,12 @@ struct PeopleSheet: View {
                         Text("Removing someone gives their waves to you.")
                     }
                 }
-
-                if model.canAddSurfer, !suggestions.isEmpty {
-                    Section("Surfed with before") {
-                        ForEach(suggestions, id: \.name) { known in
-                            Button { model.addSurfer(name: known.name, color: known.color) } label: {
-                                HStack(spacing: Self.gap) {
-                                    Circle().fill(known.color.color)
-                                        .frame(width: Self.dot, height: Self.dot)
-                                        .frame(width: Self.column)
-                                    Text(known.name).foregroundStyle(.primary)
-                                    Spacer()
-                                    Image(systemName: "plus")
-                                }
-                            }
-                            .modifier(FullWidthSeparator())
-                        }
-                    }
-                }
             }
             .navigationTitle("Who's surfing?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-            .onDisappear { model.rememberSurfers() }
             .onAppear {
                 // Adding a person from a wave's dot with no name yet: start there.
                 if !model.canAddSurfer { focused = model.surfers.first?.id }
@@ -142,12 +123,6 @@ struct PeopleSheet: View {
             }
         }
         .modifier(FullWidthSeparator())
-    }
-
-    /// People from other videos who aren't in this one yet.
-    private var suggestions: [KnownSurfer] {
-        let here = Set(model.surfers.map { $0.name.trimmingCharacters(in: .whitespaces).lowercased() })
-        return model.knownSurfers.filter { !here.contains($0.name.lowercased()) }.prefix(8).map { $0 }
     }
 }
 

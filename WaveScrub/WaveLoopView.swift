@@ -21,8 +21,11 @@ struct WaveLoopView: View {
     @State private var rate: Float = 1
     /// Only this surfer's waves, or everyone's.
     @State private var onlySurfer: Surfer.ID?
+    /// Only starred waves; goes with the surfer choice.
+    @State private var starredOnly = false
     /// The wave last watched with each choice, to come back to it.
-    @State private var lastWave: [Surfer.ID?: Wave.ID] = [:]
+    @State private var lastWave: [String: Wave.ID] = [:]
+    private var choice: String { (onlySurfer?.uuidString ?? "all") + (starredOnly ? "★" : "") }
     @AppStorage("loopZoom") private var zoom: Double = 1
 
     /// How long to loop from a bookmark while the surfer is still being found.
@@ -69,7 +72,7 @@ struct WaveLoopView: View {
         .onChange(of: waveID) {
             picking = waveID.map { model.unfoundWaveIDs.contains($0) } ?? false
             pickTime = wave?.time ?? 0
-            if let waveID { lastWave[onlySurfer] = waveID }
+            if let waveID { lastWave[choice] = waveID }
             model.priorityWaveID = waveID
             refresh()
         }
@@ -85,9 +88,13 @@ struct WaveLoopView: View {
     private var wave: Wave? { model.waves.first { $0.id == waveID } }
     /// The waves you can go through: everyone's, or one surfer's.
     private var shownWaves: [Wave] {
-        guard let onlySurfer else { return model.waves }
-        return model.waves.filter { $0.surferID == onlySurfer }
+        model.waves.filter {
+            (onlySurfer == nil || $0.surferID == onlySurfer) && (!starredOnly || $0.starred)
+        }
     }
+
+    /// The choices only show once there's something to choose between.
+    private var showsFilter: Bool { model.surfers.count > 1 || model.waves.contains(where: \.starred) }
     private var track: WaveTrack? { waveID.flatMap { model.tracks[$0] } }
 
     // MARK: Pieces
@@ -105,6 +112,9 @@ struct WaveLoopView: View {
                 Image(systemName: "person.crop.rectangle").font(.title3)
             }
             .disabled(picking || wave == nil)
+            if let wave {
+                StarButton(wave: wave)
+            }
             Button {
                 rate = rate == 1 ? 0.5 : rate == 0.5 ? 0.25 : 1
             } label: {
@@ -171,9 +181,9 @@ struct WaveLoopView: View {
             } else if wave != nil {
                 LoopScrubBar(loop: loop, clock: loop.clock)
             }
-            if model.surfers.count > 1 { surferFilter.padding(.top, wave == nil ? 12 : 4) }
+            if showsFilter { surferFilter.padding(.top, wave == nil ? 12 : 4) }
             waveNames
-                .padding(.top, model.surfers.count > 1 ? 10 : wave == nil ? 12 : 2)
+                .padding(.top, showsFilter ? 10 : wave == nil ? 12 : 2)
         }
         .background {
             if wave == nil {
@@ -185,29 +195,38 @@ struct WaveLoopView: View {
         }
     }
 
-    /// All · each surfer: pick one to go through only their waves.
+    /// ★ | All · each surfer: go through only starred waves, only one
+    /// surfer's, or both.
     private var surferFilter: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                filterChip("All", color: .white, selected: onlySurfer == nil) { onlySurfer = nil }
-                ForEach(model.surfers) { surfer in
-                    filterChip(surfer.label, color: surfer.color.color, selected: onlySurfer == surfer.id) {
-                        onlySurfer = surfer.id
+                filterChip("★", color: .yellow, selected: starredOnly) { starredOnly.toggle() }
+                if model.surfers.count > 1 {
+                    Rectangle().fill(.white.opacity(0.3)).frame(width: 1, height: 18)
+                        .padding(.horizontal, 2)
+                    filterChip("All", color: .white, selected: onlySurfer == nil) { onlySurfer = nil }
+                    ForEach(model.surfers) { surfer in
+                        filterChip(surfer.label, color: surfer.color.color, selected: onlySurfer == surfer.id) {
+                            onlySurfer = surfer.id
+                        }
                     }
                 }
             }
             .padding(.horizontal, 16)
         }
-        // Stay on the wave you're watching if it's in the new choice; otherwise
-        // go back to the one you last watched there, or the nearest before.
-        .onChange(of: onlySurfer) {
-            let shown = shownWaves
-            guard !shown.contains(where: { $0.id == waveID }) else { return }
-            if let last = lastWave[onlySurfer], shown.contains(where: { $0.id == last }) {
-                waveID = last
-            } else {
-                waveID = shown.last(where: { $0.time <= (wave?.time ?? 0) })?.id ?? shown.first?.id
-            }
+        .onChange(of: onlySurfer) { keepPlace() }
+        .onChange(of: starredOnly) { keepPlace() }
+    }
+
+    /// Stay on the wave you're watching if it's in the new choice; otherwise
+    /// go back to the one you last watched there, or the nearest before.
+    private func keepPlace() {
+        let shown = shownWaves
+        guard !shown.contains(where: { $0.id == waveID }) else { return }
+        if let last = lastWave[choice], shown.contains(where: { $0.id == last }) {
+            waveID = last
+        } else {
+            waveID = shown.last(where: { $0.time <= (wave?.time ?? 0) })?.id ?? shown.first?.id
         }
     }
 
@@ -227,11 +246,17 @@ struct WaveLoopView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    if shownWaves.isEmpty {
+                        Text(starredOnly ? "No starred waves yet" : "No waves")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 8)
+                    }
                     ForEach(shownWaves) { w in
                         Button { waveID = w.id } label: {
                             HStack(spacing: 6) {
                                 Circle().fill(w.color.color).frame(width: 10, height: 10)
-                                Text(w.name).font(.callout).lineLimit(1)
+                                Text(w.title).font(.callout).lineLimit(1)
                             }
                             .foregroundStyle(.white)
                             .padding(.horizontal, 12)
@@ -250,7 +275,7 @@ struct WaveLoopView: View {
                 withAnimation { proxy.scrollTo(waveID, anchor: .center) }
             }
             // The list is rebuilt for the new choice; bring the wave back into view.
-            .onChange(of: onlySurfer) {
+            .onChange(of: choice) {
                 DispatchQueue.main.async { proxy.scrollTo(waveID, anchor: .center) }
             }
             .onAppear { proxy.scrollTo(waveID, anchor: .center) }

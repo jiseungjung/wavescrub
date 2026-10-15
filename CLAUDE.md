@@ -28,7 +28,8 @@ to be renamed and recolored by hand. That gets tedious fast.
   yet, then renames that person's bookmarks the same way.
 - Each person gets the next unused color, which can be changed. Renaming or
   recoloring a person updates all their automatic bookmarks.
-- People used before show as quick picks with their usual color.
+- No list of people from other videos (tried and removed at the owner's
+  request).
 
 ### Naming and coloring single bookmarks
 - **Names:** typing a name on one bookmark replaces its automatic label
@@ -40,8 +41,9 @@ to be renamed and recolored by hand. That gets tedious fast.
   To change a color, change the person's color in the people button.
 - Tapping a bookmark's dot opens the list of people to switch it to someone
   else. With one person, the list also offers "Add person".
-- A custom name is the only way to mark a special wave. No extra color,
-  star, or other marker.
+- **Stars:** a star marks a special wave. Tap the star next to the wave's
+  label on the main screen, or in the loop screen's top bar. Starred waves
+  show a star before their name everywhere.
 - When people are first set up, all existing bookmarks take their person's
   color.
 
@@ -60,8 +62,9 @@ to be renamed and recolored by hand. That gets tedious fast.
 ### 3. Reviewing
 - The overview strip already colors bookmarks, so each person's waves stand
   out.
-- The loop screen gets a filter (All / each surfer), to swipe through only
-  one person's waves.
+- The loop screen has a filter row: a star toggle, then All / each surfer.
+  The star combines with the surfer choice. Switching keeps your place:
+  the wave you're watching if it fits, else the last one watched there.
 
 ### Not doing for now
 - Sets as their own thing. If wanted later, group waves into sets

@@ -18,8 +18,12 @@ struct Wave: Codable, Identifiable, Equatable {
     var surferID: Surfer.ID?
     /// A name typed for this one wave, in place of the surfer's count.
     var customName: String?
+    var starred = false
 
-    enum CodingKeys: String, CodingKey { case id, name, time, color, surferID, customName }
+    enum CodingKeys: String, CodingKey { case id, name, time, color, surferID, customName, starred }
+
+    /// The name as shown, with a star in front of a starred wave.
+    var title: String { starred ? "★ " + name : name }
 
     init(id: UUID = UUID(), name: String, time: Double, color: WaveColor = .cyan,
          surferID: Surfer.ID? = nil, customName: String? = nil) {
@@ -39,6 +43,7 @@ struct Wave: Codable, Identifiable, Equatable {
         color = try c.decodeIfPresent(WaveColor.self, forKey: .color) ?? .cyan
         surferID = try c.decodeIfPresent(UUID.self, forKey: .surferID)
         customName = try c.decodeIfPresent(String.self, forKey: .customName)
+        starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
     }
 }
 
@@ -54,12 +59,6 @@ struct Surfer: Codable, Identifiable, Equatable {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? "Wave" : trimmed
     }
-}
-
-/// Someone surfed with before, offered when adding people to another video.
-struct KnownSurfer: Codable, Equatable {
-    var name: String
-    var color: WaveColor
 }
 
 /// A small, fixed set of flag colors — no color wheel.
@@ -120,8 +119,6 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var waves: [Wave] = []
     /// Who's surfing in this video; the first is you.
     @Published private(set) var surfers: [Surfer] = []
-    /// People from other videos, most recent first.
-    @Published private(set) var knownSurfers: [KnownSurfer] = []
     /// The people sheet, opened from the top bar or a wave's dot.
     @Published var showingPeople = false
     @Published var selectedWaveID: Wave.ID?
@@ -175,7 +172,6 @@ final class PlayerModel: ObservableObject {
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         player.actionAtItemEnd = .pause
         loadRecents()
-        loadKnownSurfers()
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(value: 1, timescale: 30), queue: .main
         ) { [weak self] time in
@@ -498,6 +494,12 @@ final class PlayerModel: ObservableObject {
         saveWaves()
     }
 
+    func toggleStar(_ id: Wave.ID) {
+        guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
+        waves[i].starred.toggle()
+        saveWaves()
+    }
+
     func deleteWave(_ id: Wave.ID) {
         waves.removeAll { $0.id == id }
         saveWaves()
@@ -511,11 +513,11 @@ final class PlayerModel: ObservableObject {
 
     /// Adds someone to this video, in the next color nobody here has yet. You
     /// need a name first, or nobody could tell your waves from theirs.
-    func addSurfer(name: String = "", color: WaveColor? = nil) {
+    func addSurfer() {
         guard canAddSurfer else { return }
         let taken = Set(surfers.map(\.color))
         let free = WaveColor.allCases.first { !taken.contains($0) } ?? .cyan
-        surfers.append(Surfer(name: name, color: color ?? free))
+        surfers.append(Surfer(name: "", color: free))
         saveWaves()
     }
 
@@ -598,28 +600,6 @@ final class PlayerModel: ObservableObject {
         if let data = try? JSONEncoder().encode(waves) { defaults.set(data, forKey: "waves." + key) }
         if let data = try? JSONEncoder().encode(surfers) { defaults.set(data, forKey: "surfers." + key) }
         return (surfers, waves)
-    }
-
-    /// Keeps everyone you've named, so they're one tap away in the next video.
-    /// Called when the people sheet closes, not as each letter is typed.
-    func rememberSurfers() {
-        var known = knownSurfers
-        for surfer in surfers.reversed() {
-            let name = surfer.name.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { continue }
-            known.removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-            known.insert(KnownSurfer(name: name, color: surfer.color), at: 0)
-        }
-        known = Array(known.prefix(30))
-        guard known != knownSurfers else { return }
-        knownSurfers = known
-        if let data = try? JSONEncoder().encode(known) { UserDefaults.standard.set(data, forKey: Keys.knownSurfers) }
-    }
-
-    private func loadKnownSurfers() {
-        guard let data = UserDefaults.standard.data(forKey: Keys.knownSurfers),
-              let list = try? JSONDecoder().decode([KnownSurfer].self, from: data) else { return }
-        knownSurfers = list
     }
 
     // MARK: Following the surfer through each wave
@@ -763,6 +743,5 @@ final class PlayerModel: ObservableObject {
         static let time = "lastTime"
         static let recents = "recentVideos"
         static let lastWaveColor = "lastWaveColor"
-        static let knownSurfers = "knownSurfers"
     }
 }

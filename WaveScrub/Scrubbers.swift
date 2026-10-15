@@ -41,7 +41,7 @@ struct OverviewStrip: View {
                         .fill(wave.color.color)
                         .frame(width: 2, height: height)
                         .offset(x: wx - 1)
-                    Text(wave.name)
+                    Text(wave.title)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 3)

@@ -252,7 +252,10 @@ struct ContentView: View {
     /// The wave you're on, beside the time. Empty between waves, so nothing
     /// else moves.
     @ViewBuilder private var waveTag: some View {
-        if let wave = selectedWave { WaveTag(wave: wave) }
+        if let wave = selectedWave {
+            WaveTag(wave: wave)
+            StarButton(wave: wave)
+        }
     }
 
     /// Full library access is what lets the app read the original file in
@@ -332,5 +335,22 @@ struct WaveTag: View {
         }
         // Renumbered or renamed from elsewhere.
         .onChange(of: wave.name) { if !typing { name = wave.name } }
+    }
+}
+
+/// Tap to star a wave you'll want to find again; tap again to take it off.
+struct StarButton: View {
+    @EnvironmentObject private var model: PlayerModel
+    let wave: Wave
+
+    var body: some View {
+        Button {
+            model.toggleStar(wave.id)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            Image(systemName: wave.starred ? "star.fill" : "star")
+                .font(.title3)
+                .foregroundStyle(wave.starred ? .yellow : .white.opacity(0.7))
+        }
     }
 }
