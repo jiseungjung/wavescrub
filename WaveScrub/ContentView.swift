@@ -225,7 +225,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // Always there; only the recent videos below scroll.
             videoRow("From Photos", icon: "photo.on.rectangle", tint: .accentColor) { afterClosingVideos { openPhotos() } }
-            Divider().padding(.leading, 52)
+            Divider().overlay(Color.white.opacity(0.12)).padding(.leading, 54).padding(.trailing, 16)
             videoRow("From Files", icon: "folder", tint: .accentColor) { afterClosingVideos { showFiles = true } }
             if !model.recents.isEmpty {
                 Text("Recent")
@@ -243,7 +243,8 @@ struct ContentView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                         .listRowSeparatorTint(.white.opacity(0.12))
-                        .alignmentGuide(.listRowSeparatorLeading) { _ in 52 }
+                        .listRowSeparator(recent.id == model.recents.last?.id ? .hidden : .visible, edges: .bottom)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 54 }
                     }
                     .onDelete { offsets in
                         for i in offsets { model.removeRecent(model.recents[i].id) }
