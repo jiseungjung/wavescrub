@@ -13,7 +13,7 @@ and report the result in plain language.
 
 - **Home is the loop screen.** Every video opens on it. Top bar: videos
   button and title, then compare, star, speed, and a ⋯ menu (who's surfing,
-  tap the surfer again). Under the wave list: "Find waves".
+  track the surfer). Under the wave list: "Find waves".
 - **Finding waves is a mode, not a screen.** It fades in place (like Edit in
   Photos) with Done top-left; Done fades back to the loop, on the wave marked
   last. It holds the scrubbing tapes and the flag / surfer buttons.

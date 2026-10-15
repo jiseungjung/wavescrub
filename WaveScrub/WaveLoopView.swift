@@ -169,9 +169,9 @@ struct WaveLoopView: View {
                 Button { model.showingPeople = true } label: {
                     Label("Who's surfing", systemImage: "person.2")
                 }
-                // Wrong person, or the ride cut short: tap the surfer again.
+                // Wrong person, or the ride cut short: track the surfer again.
                 Button { beginPicking() } label: {
-                    Label("Tap the surfer again", systemImage: "person.crop.rectangle")
+                    Label("Track the surfer", systemImage: "person.crop.rectangle")
                 }
                 .disabled(picking || wave == nil)
             } label: {
@@ -225,7 +225,7 @@ struct WaveLoopView: View {
             switch status {
             case .pick:
                 Image(systemName: "hand.tap")
-                Text("Pinch to zoom, tap the surfer")
+                Text("Pinch to zoom, tap the surfer to track")
             case .finding:
                 ProgressView()
                 Text("Finding the surfer…")
