@@ -195,16 +195,12 @@ struct ContentView: View {
                 let x = min(max(12, button.minX - 6), geo.size.width - width - 12)
                 let y = below ? button.maxY + 8 : button.minY - 8 - height
                 ZStack(alignment: .topLeading) {
-                    Color.black.opacity(0.3)
+                    Color.black.opacity(0.15)
                         .ignoresSafeArea()
                         .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showVideos = false } }
                     videosList
                         .frame(width: width, height: height)
-                        .background(Color(white: 0.13), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .strokeBorder(.white.opacity(0.08)))
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+                        .modifier(CardGlass())
                         .offset(x: x, y: y)
                         .transition(.scale(scale: 0.92, anchor: below ? .topLeading : .bottomLeading)
                             .combined(with: .opacity))
@@ -450,5 +446,24 @@ private struct VideosButtonAnchor: PreferenceKey {
     static var defaultValue: Anchor<CGRect>?
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
         value = value ?? nextValue()
+    }
+}
+
+/// Liquid Glass where the system has it; a dark card before that.
+private struct CardGlass: ViewModifier {
+    private let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .clipShape(shape)
+                .glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(Color(white: 0.13), in: shape)
+                .overlay(shape.strokeBorder(.white.opacity(0.08)))
+                .clipShape(shape)
+                .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+        }
     }
 }
