@@ -269,9 +269,19 @@ struct WaveLoopView: View {
                         .background(starredOnly ? Color.yellow : Color.white.opacity(0.12), in: Circle())
                 }
                 .padding(.leading, 16)
-                .padding(.trailing, 2)
+                .padding(.trailing, 10)
             }
             waveChips
+                // Chips scrolled past the star fade out rather than being cut.
+                .mask {
+                    HStack(spacing: 0) {
+                        if showsStarToggle {
+                            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: 16)
+                        }
+                        Color.black
+                    }
+                }
         }
         .padding(.bottom, 8)
     }
@@ -305,7 +315,7 @@ struct WaveLoopView: View {
                         .id(w.id)
                     }
                 }
-                .padding(.leading, showsStarToggle ? 8 : 16)
+                .padding(.leading, showsStarToggle ? 4 : 16)
                 .padding(.trailing, 16)
             }
             .onChange(of: waveID) {
