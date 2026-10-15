@@ -599,11 +599,13 @@ final class CompareSession: ObservableObject {
         linked ? panes : [pane]
     }
 
+    /// While a finger is on a strip, only the finger moves the clips: the
+    /// players' own clocks lag behind and would pull them back and forth.
     func beginSlide(_ pane: ComparePane) {
         sliding = true
         let group = group(pane)
         wasPlaying = Set(group.filter { $0.loop.isPlaying }.map(\.id))
-        for p in group { p.loop.pause() }
+        for p in group { p.loop.beginScrub() }
     }
 
     func slide(_ pane: ComparePane, to time: Double) {
@@ -617,7 +619,7 @@ final class CompareSession: ObservableObject {
     func endSlide(_ pane: ComparePane) {
         sliding = false
         for p in group(pane) {
-            p.loop.show(p.loop.clock.time)
+            p.loop.endScrub()
             if wasPlaying.contains(p.id) { p.loop.play() }
         }
         wasPlaying = []
