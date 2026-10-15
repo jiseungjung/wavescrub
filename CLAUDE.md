@@ -19,18 +19,29 @@ to be renamed and recolored by hand. That gets tedious fast.
 ### 1. Adding people (only when needed)
 - Usually it's just the owner surfing. No screen pops up when a video
   opens. There is only a people button next to the loop button.
-- With nobody added, bookmarks are Wave 1, Wave 2... but always numbered in
+- With nobody named, bookmarks are Wave 1, Wave 2... always numbered in
   time order. Marking a wave before others renumbers the later ones (today
-  the numbers get mixed up). Bookmarks renamed by hand keep their names and
-  are skipped in the numbering.
-- Adding a second person also asks for a name for the first person (the
-  owner). Then every existing "Wave N" bookmark is renamed to that name
-  plus its number, e.g. Wave 1 -> K 1. Those bookmarks take the first
-  person's color. Bookmarks the owner already renamed by hand keep their
-  names.
-- Each person gets the next unused color, which can be changed. Names can be
-  edited from the people button at any time, and every bookmark follows.
+  the numbers get mixed up).
+- The people button works with just one person too: naming yourself (e.g. K)
+  turns Wave 1, Wave 2... into K 1, K 2...
+- Adding a second person asks for the first person's name if it isn't set
+  yet, then renames that person's bookmarks the same way.
+- Each person gets the next unused color, which can be changed. Renaming or
+  recoloring a person updates all their automatic bookmarks.
 - People used before show as quick picks with their usual color.
+
+### Naming and coloring single bookmarks
+- **Names:** typing a name on one bookmark replaces its automatic label
+  (e.g. "Barrel" instead of K 3). It still keeps its place in the count, so
+  the others don't shift. Clearing the name returns it to automatic (K 3).
+  Renaming the person leaves hand-typed names alone.
+- **Colors with one person (or nobody):** tapping the dot changes that one
+  bookmark's color, as today.
+- **Colors with two or more people:** color means who it is, so tapping the
+  dot switches the bookmark to the next person instead. To change a color,
+  change the person's color.
+- When a second person is added, all of the first person's bookmarks take
+  that person's color.
 
 ### 2. One tap per surfer to bookmark
 - With two or more people, the single flag becomes a row of colored buttons,
@@ -42,8 +53,6 @@ to be renamed and recolored by hand. That gets tedious fast.
   the later ones.
 - Only one person per wave. On a bookmark, the buttons give way to delete,
   as today.
-- Tapping the wave's tag next to the time lets you switch it to another
-  person or give it a custom name.
 - With 5 or more people, the buttons scroll sideways in landscape.
 
 ### 3. Reviewing
@@ -60,6 +69,7 @@ to be renamed and recolored by hand. That gets tedious fast.
 ### Must not break
 Until a second person is added, existing bookmarks keep their colors and any
 hand-typed names; only their Wave numbers are put back in time order.
+Naming the single person changes only the automatic labels.
 
 ### Build order
 Time-ordered Wave numbers first (useful on its own), then adding people and the one-tap buttons, then the loop-screen filter.
