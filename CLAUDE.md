@@ -19,7 +19,10 @@ to be renamed and recolored by hand. That gets tedious fast.
 ### 1. Adding people (only when needed)
 - Usually it's just the owner surfing. No screen pops up when a video
   opens. There is only a people button next to the loop button.
-- With nobody added, the app works as today: bookmarks are Wave 1, Wave 2...
+- With nobody added, bookmarks are Wave 1, Wave 2... but always numbered in
+  time order. Marking a wave before others renumbers the later ones (today
+  the numbers get mixed up). Bookmarks renamed by hand keep their names and
+  are skipped in the numbering.
 - Adding a second person also asks for a name for the first person (the
   owner). Then every existing "Wave N" bookmark is renamed to that name
   plus its number, e.g. Wave 1 -> K 1. Those bookmarks take the first
@@ -55,7 +58,8 @@ to be renamed and recolored by hand. That gets tedious fast.
 - Using the surfer's identity to help the tracker follow them.
 
 ### Must not break
-Until a second person is added, existing bookmarks keep their names and colors.
+Until a second person is added, existing bookmarks keep their colors and any
+hand-typed names; only their Wave numbers are put back in time order.
 
 ### Build order
-Adding people and the one-tap buttons first, then the loop-screen filter.
+Time-ordered Wave numbers first (useful on its own), then adding people and the one-tap buttons first, then the loop-screen filter.
