@@ -16,6 +16,9 @@ struct WaveLoopView: View {
     var videosButton = AnyView(EmptyView())
     /// Switches to finding waves.
     var onFind: () -> Void = {}
+    /// Opening the app or a video starts on the first wave; coming back from
+    /// finding waves starts where you were.
+    var startAtFirst = true
     @StateObject private var loop = LoopPlayer()
     @State private var waveID: Wave.ID?
     @State private var picking = false
@@ -80,11 +83,17 @@ struct WaveLoopView: View {
         .onAppear {
             model.player.pause()
             loop.rate = rate
-            // Back from finding waves: start on the one just marked.
-            waveID = model.lastMarkedWaveID.flatMap { id in model.waves.first { $0.id == id }?.id }
-                ?? model.selectedWaveID
-                ?? model.waves.last(where: { $0.time <= model.currentTime })?.id
-                ?? model.waves.first?.id
+            // Back from finding waves: start on the one just marked, or near
+            // where you were. Otherwise from the first wave.
+            if let marked = model.lastMarkedWaveID.flatMap({ id in model.waves.first { $0.id == id } }) {
+                waveID = marked.id
+            } else if startAtFirst {
+                waveID = model.waves.first?.id
+            } else {
+                waveID = model.selectedWaveID
+                    ?? model.waves.last(where: { $0.time <= model.currentTime })?.id
+                    ?? model.waves.first?.id
+            }
             model.lastMarkedWaveID = nil
         }
         .onDisappear {
@@ -99,6 +108,13 @@ struct WaveLoopView: View {
             refresh()
         }
         .onChange(of: track) { refresh() }
+        // Another video opened: start it fresh, from its first wave.
+        .onChange(of: model.openedCount) {
+            onlySurfer = nil
+            starredOnly = false
+            lastWave = [:]
+            waveID = model.waves.first?.id
+        }
         .onChange(of: model.unfoundWaveIDs) {
             if let waveID, model.unfoundWaveIDs.contains(waveID), !picking {
                 beginPicking()

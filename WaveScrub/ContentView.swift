@@ -22,6 +22,9 @@ struct ContentView: View {
     @State private var controlsHidden = false
     /// Finding waves, rather than watching them on the loop screen.
     @State private var finding = false
+    /// Whether the loop screen is coming back from finding waves, rather than
+    /// starting on a freshly opened video.
+    @State private var backFromFinding = false
     @AppStorage(FineTape.spanKey) private var tapeSpan: Double = FineTape.defaultSpan
 
     var body: some View {
@@ -36,7 +39,8 @@ struct ContentView: View {
                         Group { if landscape { landscapeLayout } else { portraitLayout } }
                             .transition(.opacity)
                     } else {
-                        WaveLoopView(videosButton: AnyView(openMenu)) { setFinding(true) }
+                        WaveLoopView(videosButton: AnyView(openMenu), onFind: { setFinding(true) },
+                                     startAtFirst: !backFromFinding)
                             .transition(.opacity)
                     }
                 } else {
@@ -75,7 +79,10 @@ struct ContentView: View {
                 .presentationDetents([.medium, .large])
         }
         // Every video opens on the loop screen.
-        .onChange(of: model.openedCount) { finding = false }
+        .onChange(of: model.openedCount) {
+            finding = false
+            backFromFinding = false
+        }
         .alert("Can't open video", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -292,7 +299,10 @@ struct ContentView: View {
     }
 
     private func setFinding(_ on: Bool) {
-        if !on { model.player.pause() }
+        if !on {
+            model.player.pause()
+            backFromFinding = true
+        }
         withAnimation(.easeInOut(duration: 0.25)) { finding = on }
     }
 
