@@ -717,11 +717,8 @@ final class FollowingPlayerView: UIView {
         let crop = CGRect(x: image.extent.minX + (shown.minX - region.minX) * w,
                           y: image.extent.minY + (region.maxY - shown.maxY) * h,
                           width: shown.width * w, height: shown.height * h)
-        var piece = image.cropped(to: crop)
-        if !image.extent.contains(crop) {
-            piece = image.composited(over: CIImage(color: .black)).cropped(to: crop)
-        }
-        if crop.height > pixels { piece = piece.transformed(by: CGAffineTransform(scaleX: pixels / crop.height, y: pixels / crop.height)) }
+        let scale = min(1, pixels / crop.height)
+        let piece = LoopFrames.cut(image, to: crop, size: CGSize(width: crop.width * scale, height: crop.height * scale))
         guard let picture = context.createCGImage(piece, from: piece.extent) else { return }
 
         CATransaction.begin()

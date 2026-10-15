@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreImage
+import os
 
 /// The part of the picture shown while following the surfer: how much of it
 /// fits on screen, and how far the view has been dragged off them.
@@ -56,7 +57,7 @@ final class LoopFrames: @unchecked Sendable {
     /// fractions of it; without one the frame is the whole picture as stored.
     typealias Frame = (time: Double, buffer: CVPixelBuffer, region: CGRect?)
 
-    private let queue = DispatchQueue(label: "LoopFrames", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "LoopFrames", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let lock = NSLock()
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var asset: AVAsset?
@@ -178,10 +179,20 @@ final class LoopFrames: @unchecked Sendable {
         pump()
     }
 
+    /// Whether there's room for more frames. Close to the phone's limit for
+    /// the app, sliding does without them rather than the app being closed.
+    private static var memoryToSpare: Bool {
+        #if os(iOS)
+        os_proc_available_memory() > 700_000_000
+        #else
+        true
+        #endif
+    }
+
     /// Decodes the next missing second nearest where you are, going your way
     /// first. Called with the lock held.
     private func pump() {
-        guard decoding == nil, let asset, let track, let view, !starts.isEmpty else { return }
+        guard decoding == nil, let asset, let track, let view, !starts.isEmpty, Self.memoryToSpare else { return }
         let order = [0, direction, -direction, 2 * direction, -2 * direction].map { wanted + $0 }
         guard let next = order.first(where: {
             starts.indices.contains($0) && seconds[$0] == nil && abs($0 - wanted) <= reach
@@ -193,7 +204,11 @@ final class LoopFrames: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             let frames = self.decode(asset, track: track, from: from, to: to,
-                                     view: view, pixels: pixels, orientation: orientation)
+                                     view: view, pixels: pixels, orientation: orientation) {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return run != self.run || viewRun != self.viewRun
+            }
             self.lock.lock()
             defer { self.lock.unlock() }
             guard run == self.run, viewRun == self.viewRun else { return }
@@ -206,7 +221,8 @@ final class LoopFrames: @unchecked Sendable {
     /// Each frame upright, cut to what's shown and its margin, at the video's
     /// detail or the screen's, whichever is less.
     private func decode(_ asset: AVAsset, track: AVAssetTrack, from: Double, to: Double,
-                        view: FollowView, pixels: CGFloat, orientation: CGImagePropertyOrientation) -> [Frame] {
+                        view: FollowView, pixels: CGFloat, orientation: CGImagePropertyOrientation,
+                        stale: () -> Bool) -> [Frame] {
         guard let reader = try? AVAssetReader(asset: asset) else { return [] }
         reader.timeRange = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 60000),
                                        end: CMTime(seconds: to, preferredTimescale: 60000))
@@ -218,46 +234,73 @@ final class LoopFrames: @unchecked Sendable {
         reader.add(output)
         guard reader.startReading() else { return [] }
         let m = Self.margin
-        let black = CIImage(color: .black)
         var pool: CVPixelBufferPool?
         var outSize = CGSize.zero
         var frames: [Frame] = []
-        while let sample = output.copyNextSampleBuffer() {
-            guard let source = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            let image = CIImage(cvPixelBuffer: source).oriented(orientation)
-            let w = image.extent.width, h = image.extent.height
-            let shown = view.rect(at: time)
-            let region = shown.insetBy(dx: -shown.width * m, dy: -shown.height * m)
-            // The same size every frame: what's shown never changes size.
-            if pool == nil {
-                let sourceH = region.height * h
-                var scale = min(1, pixels * (1 + 2 * m) / sourceH)
-                let area = region.width * w * region.height * h * scale * scale
-                if area > Self.maxPixels { scale *= sqrt(Self.maxPixels / area) }
-                outSize = CGSize(width: max(2, (region.width * w * scale / 2).rounded() * 2),
-                                 height: max(2, (region.height * h * scale / 2).rounded() * 2))
-                CVPixelBufferPoolCreate(nil, nil, [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-                    kCVPixelBufferWidthKey as String: Int(outSize.width),
-                    kCVPixelBufferHeightKey as String: Int(outSize.height),
-                    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-                ] as CFDictionary, &pool)
+        // Each 4K frame is let go as soon as its part is cut out: left to the
+        // end of the second, a second of them piled up and ran the phone out
+        // of memory.
+        while true {
+            let done: Bool = autoreleasepool {
+                guard let sample = output.copyNextSampleBuffer() else { return true }
+                // A new loop, or the zoom or view moved on: these are wanted no more.
+                if stale() {
+                    reader.cancelReading()
+                    frames = []
+                    return true
+                }
+                guard let source = CMSampleBufferGetImageBuffer(sample) else { return false }
+                let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                let image = CIImage(cvPixelBuffer: source).oriented(orientation)
+                let w = image.extent.width, h = image.extent.height
+                let shown = view.rect(at: time)
+                let region = shown.insetBy(dx: -shown.width * m, dy: -shown.height * m)
+                // The same size every frame: what's shown never changes size.
+                if pool == nil {
+                    let sourceH = region.height * h
+                    var scale = min(1, pixels * (1 + 2 * m) / sourceH)
+                    let area = region.width * w * region.height * h * scale * scale
+                    if area > Self.maxPixels { scale *= sqrt(Self.maxPixels / area) }
+                    outSize = CGSize(width: max(2, (region.width * w * scale / 2).rounded() * 2),
+                                     height: max(2, (region.height * h * scale / 2).rounded() * 2))
+                    CVPixelBufferPoolCreate(nil, nil, [
+                        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                        kCVPixelBufferWidthKey as String: Int(outSize.width),
+                        kCVPixelBufferHeightKey as String: Int(outSize.height),
+                        kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+                    ] as CFDictionary, &pool)
+                }
+                guard let pool else { return true }
+                var buffer: CVPixelBuffer?
+                CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+                guard let buffer else { return false }
+                // Core Image measures from the bottom-left.
+                let crop = CGRect(x: image.extent.minX + region.minX * w,
+                                  y: image.extent.minY + (1 - region.maxY) * h,
+                                  width: region.width * w, height: region.height * h)
+                context.render(Self.cut(image, to: crop, size: outSize), to: buffer,
+                               bounds: CGRect(origin: .zero, size: outSize), colorSpace: Self.sRGB)
+                frames.append((time, buffer, region))
+                return false
             }
-            guard let pool else { break }
-            var buffer: CVPixelBuffer?
-            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
-            guard let buffer else { continue }
-            // Core Image measures from the bottom-left.
-            let crop = CGRect(x: image.extent.minX + region.minX * w,
-                              y: image.extent.minY + (1 - region.maxY) * h,
-                              width: region.width * w, height: region.height * h)
-            let piece = image.composited(over: black).cropped(to: crop)
-                .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY)
-                    .concatenating(CGAffineTransform(scaleX: outSize.width / crop.width, y: outSize.height / crop.height)))
-            context.render(piece, to: buffer, bounds: CGRect(origin: .zero, size: outSize), colorSpace: Self.sRGB)
-            frames.append((time, buffer, region))
+            if done { break }
         }
         return frames
+    }
+
+    /// The part of `image` inside `crop`, scaled to `size`, on black, with its
+    /// corner at zero. Only the part of the picture that's there is scaled:
+    /// cutting a crop far bigger than the picture out of it first, as when
+    /// zoomed right out on frames made zoomed in, used a great deal of memory.
+    static func cut(_ image: CIImage, to crop: CGRect, size: CGSize) -> CIImage {
+        let frame = CGRect(origin: .zero, size: size)
+        let black = CIImage(color: .black).cropped(to: frame)
+        let visible = image.extent.intersection(crop)
+        guard !visible.isNull, !visible.isEmpty, crop.width > 0, crop.height > 0 else { return black }
+        return image.cropped(to: visible)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY)
+                .concatenating(CGAffineTransform(scaleX: size.width / crop.width, y: size.height / crop.height)))
+            .composited(over: black)
+            .cropped(to: frame)
     }
 }
