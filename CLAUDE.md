@@ -11,33 +11,37 @@ and report the result in plain language.
 
 ## Planned: tagging several surfers in one video
 
-Status: proposed on 2026-10-15, not built yet.
+Status: proposed on 2026-10-15 and revised with the owner the same day. Not built yet.
 
 **Problem.** When one video has waves from several people, each bookmark has
 to be renamed and recolored by hand. That gets tedious fast.
 
-### 1. Pick the surfers once per video
-- A "Who's surfing?" sheet opens when you open a video, and from a people
-  button next to the loop button. Tap + and type a name. Each new surfer gets
-  the next unused color, which can be changed.
-- Surfers you've used before show as chips, so one tap adds a friend with
-  their usual color. The same person is always the same color.
-- Optional: with nobody added, the app works exactly as it does today.
+### 1. Adding people (only when needed)
+- Usually it's just the owner surfing. No screen pops up when a video
+  opens. There is only a people button next to the loop button.
+- With nobody added, the app works as today: bookmarks are Wave 1, Wave 2...
+- Adding a second person also asks for a name for the first person (the
+  owner). Then every existing "Wave N" bookmark is renamed to that name
+  plus its number, e.g. Wave 1 -> K 1. Those bookmarks take the first
+  person's color. Bookmarks the owner already renamed by hand keep their
+  names.
+- Each person gets the next unused color, which can be changed. Names can be
+  edited from the people button at any time, and every bookmark follows.
+- People used before show as quick picks with their usual color.
 
 ### 2. One tap per surfer to bookmark
-- The single flag becomes a row of colored buttons, one per surfer, showing
-  their initial. Scrub to a takeoff and tap the person riding. That saves a
-  bookmark named like "Kai 3" in Kai's color.
+- With two or more people, the single flag becomes a row of colored buttons,
+  one per person, showing their initial. Scrub to a takeoff and tap the
+  person riding. That saves a bookmark like "K 3" in their color.
 - No concept of sets. Each tap stands alone, so any order, missing surfers,
   or empty sets just work.
-- Numbers follow time order per surfer. Marking an earlier wave renumbers
+- Numbers follow time order per person. Marking an earlier wave renumbers
   the later ones.
-- The buttons stay visible while sitting on a bookmark, so two surfers on the
-  same wave can both be tagged.
-- Tapping the wave's tag next to the time opens a menu: switch it to another
-  surfer, give it a custom name, or delete it. Delete moves there from the
-  toolbar.
-- With 5 or more surfers, the buttons scroll sideways in landscape.
+- Only one person per wave. On a bookmark, the buttons give way to delete,
+  as today.
+- Tapping the wave's tag next to the time lets you switch it to another
+  person or give it a custom name.
+- With 5 or more people, the buttons scroll sideways in landscape.
 
 ### 3. Reviewing
 - The overview strip already colors bookmarks, so each person's waves stand
@@ -51,7 +55,7 @@ to be renamed and recolored by hand. That gets tedious fast.
 - Using the surfer's identity to help the tracker follow them.
 
 ### Must not break
-Existing bookmarks have no surfer. They keep their current names and colors.
+Until a second person is added, existing bookmarks keep their names and colors.
 
 ### Build order
-Parts 1 and 2 first, then the loop-screen filter.
+Adding people and the one-tap buttons first, then the loop-screen filter.
