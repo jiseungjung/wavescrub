@@ -26,6 +26,8 @@ struct WaveLoopView: View {
     @State private var pickTime: Double = 0
     @State private var rate: Float = 1
     @State private var comparing = false
+    /// Tap the video to hide or show the bars, like finding waves sideways.
+    @State private var controlsHidden = false
     /// Only this surfer's waves, or everyone's.
     @State private var onlySurfer: Surfer.ID?
     /// Only starred waves; goes with the surfer choice.
@@ -51,13 +53,16 @@ struct WaveLoopView: View {
                 zoom: zoom,
                 stillID: picking ? waveID : nil,
                 onTap: picking ? { point in pick(point) } : nil,
+                onPlainTap: {
+                    withAnimation(.easeInOut(duration: 0.2)) { controlsHidden.toggle() }
+                },
                 onSwipe: { step($0) },
                 onZoom: { zoom = $0 }
             )
             .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                topBar
+                if showsControls { topBar.transition(.opacity) }
                 Spacer()
                 if model.waves.isEmpty {
                     noWaves
@@ -65,7 +70,7 @@ struct WaveLoopView: View {
                     statusLabel(status)
                 }
                 Spacer()
-                if !model.waves.isEmpty { bottomPanel }
+                if !model.waves.isEmpty && showsControls { bottomPanel.transition(.opacity) }
             }
         }
         .statusBarHidden()
@@ -124,6 +129,8 @@ struct WaveLoopView: View {
     }
 
     private var wave: Wave? { model.waves.first { $0.id == waveID } }
+    /// The bars always show while tapping the surfer or with nothing marked.
+    private var showsControls: Bool { !controlsHidden || picking || model.waves.isEmpty }
     /// The waves you can go through: everyone's, or one surfer's.
     private var shownWaves: [Wave] {
         model.waves.filter {
@@ -710,6 +717,8 @@ struct FollowingVideoView: UIViewRepresentable {
     /// starts unzoomed.
     var stillID: Wave.ID?
     var onTap: ((CGPoint) -> Void)?
+    /// A tap when there's no point to tap on: hides or shows the bars.
+    var onPlainTap: (() -> Void)?
     var onSwipe: (Int) -> Void
     var onZoom: (Double) -> Void
     /// One of two clips being compared: drag to look around, double-tap to
@@ -727,6 +736,7 @@ struct FollowingVideoView: UIViewRepresentable {
         view.zoom = zoom
         view.stillID = stillID
         view.onTap = onTap
+        view.onPlainTap = onPlainTap
         view.onSwipe = onSwipe
         view.onZoom = onZoom
     }
@@ -750,6 +760,7 @@ final class FollowingPlayerView: UIView {
         didSet { if stillID != oldValue { setStill(scale: 1, offset: .zero) } }
     }
     var onTap: ((CGPoint) -> Void)?
+    var onPlainTap: (() -> Void)?
     var onSwipe: (Int) -> Void = { _ in }
     var onZoom: (Double) -> Void = { _ in }
     private let comparing: Bool
@@ -958,7 +969,7 @@ final class FollowingPlayerView: UIView {
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        guard let onTap else { return }
+        guard let onTap else { onPlainTap?(); return }
         // Through the still frame's zoom, to a point on the picture itself.
         let p = layer.convert(gesture.location(in: self), to: playerLayer)
         let f = playerLayer.videoRect
