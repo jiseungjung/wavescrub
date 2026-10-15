@@ -26,3 +26,4 @@ targets:
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "WaveScrub plays your videos straight from the photo library, without copying them."
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "WaveScrub saves the clips you export to your photo library."

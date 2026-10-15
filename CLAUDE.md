@@ -21,6 +21,25 @@ and report the result in plain language.
   and a Find waves button.
 - Compare opens from home's top bar; it has jog strips per clip, one shared
   strip when linked.
+- **Zoom is per video** (agreed 2026-10-16): the camera doesn't move within a
+  video, so every wave shows the same amount of the picture. Each video
+  remembers its own zoom. (Before, zoom went by the surfer's size, so it
+  changed from wave to wave.)
+
+## Exporting clips (built 2026-10-16)
+
+- ⋯ → Export fades into export mode in place: Cancel top-left, speed
+  top-right. The wave being watched starts checked.
+- Tapping a wave name checks / unchecks it and plays it. Waves not yet
+  followed can't be checked. "Select all shown" checks every wave the
+  surfer / star filters show. "Export N waves" makes one video.
+- Each wave plays as on the loop screen: following the surfer, as wide as the
+  screen shows at the video's zoom, cut to 9:16 (1080×1920) by trimming
+  sky and water above and below. Zoomed out too far for 9:16, it's as tall
+  as the picture instead (no black bars).
+- Several waves are stitched in time order with straight cuts. Exported at
+  the speed being watched, with sound, no labels.
+- Saved into a "WaveScrub" album in Photos, then the share sheet opens.
 
 ## Planned: tagging several surfers in one video
 

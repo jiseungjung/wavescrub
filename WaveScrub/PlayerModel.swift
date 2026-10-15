@@ -149,6 +149,16 @@ final class PlayerModel: ObservableObject {
     @Published var rate: Float = 1 {
         didSet { player.defaultRate = rate; if isPlaying { player.rate = rate } }
     }
+    /// How much of the picture's height the loop screen shows top to bottom,
+    /// as a share of it: this video's zoom. The camera doesn't move within a
+    /// video, so every wave in it is shown at the same zoom. Unset until the
+    /// first wave is followed.
+    @Published var loopSpan: Double? {
+        didSet {
+            guard let videoKey, loopSpan != oldValue else { return }
+            UserDefaults.standard.set(loopSpan, forKey: Self.spanKey(videoKey))
+        }
+    }
 
     private(set) var asset: AVAsset?
     /// Which video the waves belong to: the Photos id or the file's path.
@@ -330,6 +340,7 @@ final class PlayerModel: ObservableObject {
             self.videoSize = info.size
             self.videoOrientation = info.orientation
             self.videoKey = key
+            self.loopSpan = Self.savedSpan(key: key)
             (self.surfers, self.waves) = Self.loadWaves(key: key, defaultColor: lastWaveColor)
             self.tracks = Self.loadTracks(key: key)
             self.unfoundWaveIDs = []
@@ -730,6 +741,20 @@ final class PlayerModel: ObservableObject {
         guard let url = tracksURL(key: key), let data = try? Data(contentsOf: url),
               let byName = try? JSONDecoder().decode([String: WaveTrack].self, from: data) else { return [:] }
         return Dictionary(uniqueKeysWithValues: byName.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
+    }
+
+    private static func spanKey(_ key: String) -> String { "loopSpan." + key }
+
+    /// A video's zoom, as last left on the loop screen.
+    static func savedSpan(key: String) -> Double? {
+        UserDefaults.standard.object(forKey: spanKey(key)) as? Double
+    }
+
+    /// The zoom a video starts at before it has one of its own: what the loop
+    /// screen showed of this wave when zoom went by the surfer's size.
+    static func startingSpan(for track: WaveTrack) -> Double {
+        let zoom = UserDefaults.standard.object(forKey: "loopZoom") as? Double ?? 1
+        return Double(track.height) * FollowingPlayerView.heightsInView / max(zoom, 0.05)
     }
 
     private func savePosition() {

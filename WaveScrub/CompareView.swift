@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Two waves looping together to compare, from the same video or different
 /// ones: one above the other upright, side by side turned sideways. Each is
-/// followed and zoomed so the two surfers are the same size, and each has its
+/// followed at its own video's zoom, and each has its
 /// own tape to slide through it. Linked, sliding or playing one moves both,
 /// lined up on the moment they were linked at.
 struct CompareView: View {
@@ -15,7 +15,6 @@ struct CompareView: View {
     @State private var choosingFor: ComparePane?
     /// How many seconds one swipe across a jog strip moves.
     @AppStorage("compareTapeSpan") private var tapeSpan: Double = 4
-    @AppStorage("loopZoom") private var loopZoom: Double = 1
 
     var body: some View {
         GeometryReader { geo in
@@ -64,7 +63,7 @@ struct CompareView: View {
                 .preferredColorScheme(.dark)
         }
         .onAppear {
-            session.start(model: model, first: first, zoom: loopZoom)
+            session.start(model: model, first: first)
             // Once this screen has finished coming up.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { choosingFor = session.panes[1] }
         }
@@ -136,7 +135,7 @@ struct ComparePaneView: View {
                         videoSize: clip.video.info.size,
                         orientation: clip.video.info.orientation,
                         track: session.track(for: pane),
-                        zoom: pane.zoom,
+                        span: session.span(of: pane),
                         onSwipe: { _ in },
                         onZoom: { session.zoom(pane, to: $0) },
                         comparing: true
@@ -443,7 +442,9 @@ final class ComparePane: ObservableObject, Identifiable {
     @Published var clip: CompareClip?
     /// Opening, downloading, or why it couldn't be opened.
     @Published var status: String?
-    @Published var zoom: Double = 1
+    /// How much of the picture's height is shown: its video's zoom to begin
+    /// with, then pinched here.
+    @Published var span: Double?
     /// While linked, the part of the wave both clips have.
     var linkedRange: ClosedRange<Double>?
 }
@@ -462,7 +463,6 @@ final class CompareSession: ObservableObject {
     private var watchers: [AnyCancellable] = []
     private var sliding = false
     private var wasPlaying: Set<ComparePane.ID> = []
-    private var startZoom = 1.0
 
     /// How long to loop from a bookmark when the surfer hasn't been followed.
     private static let unfollowedLength = 12.0
@@ -479,10 +479,9 @@ final class CompareSession: ObservableObject {
     var linked: Bool { anchors != nil }
     var ready: Bool { panes.allSatisfy { $0.clip != nil } }
 
-    func start(model: PlayerModel, first: Wave, zoom: Double) {
+    func start(model: PlayerModel, first: Wave) {
         guard self.model == nil else { return }
         self.model = model
-        startZoom = zoom
         choose(CompareChoice(video: .current, wave: first), for: panes[0])
     }
 
@@ -524,9 +523,11 @@ final class CompareSession: ObservableObject {
                     video = OpenedVideo(asset: asset, info: model.videoInfo, key: key)
                 }
                 let saved = video.key == model.videoKey ? [:] : PlayerModel.loadTracks(key: video.key)
-                // Another wave in a clip keeps its zoom; only an empty one
-                // starts at the loop screen's.
-                if pane.clip == nil { pane.zoom = startZoom }
+                // Another wave from the same video keeps the clip's zoom;
+                // another video starts at its own.
+                if pane.clip?.video.key != video.key {
+                    pane.span = video.key == model.videoKey ? model.loopSpan : PlayerModel.savedSpan(key: video.key)
+                }
                 pane.clip = CompareClip(video: video, wave: choice.wave, track: saved[choice.wave.id])
                 pane.status = nil
                 pane.loop.rate = rate
@@ -659,14 +660,19 @@ final class CompareSession: ObservableObject {
         panes.swapAt(0, 1)
     }
 
-    /// Linked, both zoom by the same amount, so the surfers stay the same size.
-    func zoom(_ pane: ComparePane, to zoom: Double) {
-        if linked, pane.zoom > 0 {
-            let k = zoom / pane.zoom
+    /// The clip's zoom; a video never zoomed starts as its first wave looked.
+    func span(of pane: ComparePane) -> Double {
+        pane.span ?? track(for: pane).map(PlayerModel.startingSpan) ?? 0.5
+    }
+
+    /// Linked, both zoom by the same amount.
+    func zoom(_ pane: ComparePane, to span: Double) {
+        if linked {
+            let k = span / self.span(of: pane)
             for other in panes where other !== pane {
-                other.zoom = min(max(other.zoom * k, 0.05), 4)
+                other.span = min(max(self.span(of: other) * k, FollowingPlayerView.leastSpan), 1.5)
             }
         }
-        pane.zoom = zoom
+        pane.span = span
     }
 }

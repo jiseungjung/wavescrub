@@ -35,7 +35,17 @@ struct WaveLoopView: View {
     /// The wave last watched with each choice, to come back to it.
     @State private var lastWave: [String: Wave.ID] = [:]
     private var choice: String { (onlySurfer?.uuidString ?? "all") + (starredOnly ? "★" : "") }
-    @AppStorage("loopZoom") private var zoom: Double = 1
+    /// Choosing waves to export, rather than just watching them.
+    @State private var exporting = false
+    @State private var chosen: Set<Wave.ID> = []
+    @State private var exportJob: Task<Void, Never>?
+    @State private var exportProgress: Double?
+    @State private var exportError: String?
+    @State private var shared: SharedFile?
+    /// A word that fades after a moment, like "Saved to Photos".
+    @State private var note: String?
+    /// How big the video is on screen, for exports as wide as what you see.
+    @State private var viewSize: CGSize = .zero
 
     /// How long to loop from a bookmark while the surfer is still being found.
     private static let unfollowedLength = 12.0
@@ -50,24 +60,35 @@ struct WaveLoopView: View {
                 videoSize: model.videoSize,
                 orientation: model.videoOrientation,
                 track: picking ? nil : track,
-                zoom: zoom,
+                span: span,
                 stillID: picking ? waveID : nil,
                 onTap: picking ? { point in pick(point) } : nil,
                 onPlainTap: {
                     withAnimation(.easeInOut(duration: 0.2)) { controlsHidden.toggle() }
                 },
                 onSwipe: { step($0) },
-                onZoom: { zoom = $0 }
+                onZoom: { model.loopSpan = $0 }
             )
             .ignoresSafeArea()
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { viewSize = geo.size }
+                        .onChange(of: geo.size) { viewSize = geo.size }
+                }
+            }
 
             VStack(spacing: 0) {
                 if showsControls { topBar.transition(.opacity) }
                 Spacer()
                 if model.waves.isEmpty {
                     noWaves
+                } else if let exportProgress {
+                    exportingCard(exportProgress)
                 } else if let status {
                     statusLabel(status)
+                } else if let note {
+                    noteLabel(note)
                 }
                 Spacer()
                 if !model.waves.isEmpty && showsControls { bottomPanel.transition(.opacity) }
@@ -100,6 +121,7 @@ struct WaveLoopView: View {
                     ?? model.waves.first?.id
             }
             model.lastMarkedWaveID = nil
+            keepSpan()
         }
         .onDisappear {
             loop.stop()
@@ -112,9 +134,15 @@ struct WaveLoopView: View {
             model.priorityWaveID = waveID
             refresh()
         }
-        .onChange(of: track) { refresh() }
+        .onChange(of: track) {
+            keepSpan()
+            refresh()
+        }
         // Another video opened: start it fresh, from its first wave.
         .onChange(of: model.openedCount) {
+            exportJob?.cancel()
+            exporting = false
+            chosen = []
             onlySurfer = nil
             starredOnly = false
             lastWave = [:]
@@ -126,6 +154,18 @@ struct WaveLoopView: View {
             }
         }
         .onChange(of: rate) { loop.rate = rate }
+        .sheet(item: $shared, onDismiss: { loop.play() }) { file in
+            ShareSheet(items: [file.url])
+                .presentationDetents([.medium, .large])
+        }
+        .alert("Couldn't export", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "")
+        }
     }
 
     private var wave: Wave? { model.waves.first { $0.id == waveID } }
@@ -143,10 +183,51 @@ struct WaveLoopView: View {
     /// The star toggle shows once something is starred.
     private var showsStarToggle: Bool { starredOnly || model.waves.contains(where: \.starred) }
     private var track: WaveTrack? { waveID.flatMap { model.tracks[$0] } }
+    /// This video's zoom, the same for every wave in it.
+    private var span: Double { model.loopSpan ?? track.map(PlayerModel.startingSpan) ?? 0.5 }
+
+    /// A video's first followed wave sets its zoom, as it looked before.
+    private func keepSpan() {
+        if model.loopSpan == nil, let track { model.loopSpan = PlayerModel.startingSpan(for: track) }
+    }
 
     // MARK: Pieces
 
     private var topBar: some View {
+        Group {
+            if exporting { exportTopBar } else { watchTopBar }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
+    }
+
+    private var speedButton: some View {
+        Button {
+            rate = rate == 1 ? 0.5 : rate == 0.5 ? 0.25 : 1
+        } label: {
+            Text(rate == 1 ? "1×" : rate == 0.5 ? "½×" : "¼×")
+                .font(.system(.callout, design: .monospaced))
+        }
+    }
+
+    /// Choosing waves to export: Cancel, and the speed, since it's the speed
+    /// they're exported at.
+    private var exportTopBar: some View {
+        ZStack {
+            Text("Export").font(.headline)
+            HStack {
+                Button("Cancel") { setExporting(false) }
+                    .disabled(exportProgress != nil)
+                Spacer()
+                speedButton
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var watchTopBar: some View {
         HStack(spacing: 18) {
             videosButton
             Text(model.title)
@@ -165,14 +246,12 @@ struct WaveLoopView: View {
             if let wave {
                 StarButton(wave: wave)
             }
-            Button {
-                rate = rate == 1 ? 0.5 : rate == 0.5 ? 0.25 : 1
-            } label: {
-                Text(rate == 1 ? "1×" : rate == 0.5 ? "½×" : "¼×")
-                    .font(.system(.callout, design: .monospaced))
-            }
+            speedButton
             // Things done now and then.
             Menu {
+                Button { setExporting(true) } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
                 Button { model.showingPeople = true } label: {
                     Label("Who's surfing", systemImage: "person.2")
                 }
@@ -185,10 +264,6 @@ struct WaveLoopView: View {
                 Image(systemName: "ellipsis.circle").font(.title3)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
     }
 
     private var findButton: some View {
@@ -275,8 +350,13 @@ struct WaveLoopView: View {
             if showsFilter { surferFilter.padding(.top, wave == nil ? 12 : 4) }
             waveNames
                 .padding(.top, showsFilter ? 10 : wave == nil ? 12 : 2)
-            findButton
-                .padding(.bottom, 6)
+            if exporting {
+                exportBar
+                    .padding(.bottom, 6)
+            } else {
+                findButton
+                    .padding(.bottom, 6)
+            }
         }
         .background {
             if wave == nil {
@@ -368,9 +448,14 @@ struct WaveLoopView: View {
                             .padding(.vertical, 8)
                     }
                     ForEach(shownWaves) { w in
-                        Button { waveID = w.id } label: {
+                        Button { tapWave(w) } label: {
                             HStack(spacing: 6) {
-                                if model.surfers.count > 1 {
+                                if exporting {
+                                    // A wave can be exported once its surfer is followed.
+                                    Image(systemName: model.tracks[w.id] == nil ? "circle.dashed"
+                                          : chosen.contains(w.id) ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(chosen.contains(w.id) ? Color.yellow : .white.opacity(0.7))
+                                } else if model.surfers.count > 1 {
                                     Circle().fill(w.color.color).frame(width: 10, height: 10)
                                 }
                                 Text(w.title).font(.callout).lineLimit(1)
@@ -400,6 +485,122 @@ struct WaveLoopView: View {
         }
         .onChange(of: onlySurfer) { keepPlace() }
         .onChange(of: starredOnly) { keepPlace() }
+    }
+
+    // MARK: Exporting
+
+    /// Every wave you can see along the bottom that's followed, chosen or not.
+    private var choosable: [Wave.ID] { shownWaves.map(\.id).filter { model.tracks[$0] != nil } }
+
+    private var exportBar: some View {
+        let allChosen = !choosable.isEmpty && choosable.allSatisfy { chosen.contains($0) }
+        let count = chosen.count
+        return HStack {
+            Button(allChosen ? "Deselect all" : "Select all shown") {
+                if allChosen {
+                    chosen.subtract(choosable)
+                } else {
+                    chosen.formUnion(choosable)
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.white)
+            .disabled(choosable.isEmpty)
+            Spacer()
+            Button(action: startExport) {
+                Label(count == 1 ? "Export wave" : count == 0 ? "Export" : "Export \(count) waves",
+                      systemImage: "square.and.arrow.up")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.yellow)
+            .foregroundStyle(.black)
+            .disabled(count == 0 || exportProgress != nil)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func exportingCard(_ progress: Double) -> some View {
+        VStack(spacing: 12) {
+            ProgressView(value: progress)
+                .tint(.yellow)
+                .frame(width: 180)
+            Text("Exporting… \(Int((progress * 100).rounded()))%")
+                .font(.callout)
+                .monospacedDigit()
+            Button("Cancel") { exportJob?.cancel() }
+                .font(.callout)
+        }
+        .foregroundStyle(.white)
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func noteLabel(_ text: String) -> some View {
+        Label(text, systemImage: "checkmark.circle.fill")
+            .font(.callout)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .allowsHitTesting(false)
+            .transition(.opacity)
+    }
+
+    /// Fades in like finding waves, with the wave you're watching chosen.
+    private func setExporting(_ on: Bool) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            exporting = on
+            chosen = on ? Set([waveID].compactMap { $0 }.filter { model.tracks[$0] != nil }) : []
+        }
+    }
+
+    /// While exporting, a tap chooses the wave (or lets it go), and plays it.
+    private func tapWave(_ w: Wave) {
+        if exporting, model.tracks[w.id] != nil {
+            if chosen.contains(w.id) { chosen.remove(w.id) } else { chosen.insert(w.id) }
+        }
+        waveID = w.id
+    }
+
+    private func startExport() {
+        guard let asset = model.asset else { return }
+        let waves = model.waves.filter { chosen.contains($0.id) }.sorted { $0.time < $1.time }
+        let pieces = waves.compactMap { w in
+            model.tracks[w.id].map { ClipExport.Piece(start: $0.start, end: $0.end, track: $0) }
+        }
+        guard !pieces.isEmpty else { return }
+        let shown = ClipExport.shown(span: span, screen: viewSize, picture: model.videoSize)
+        let name = waves.count == 1 ? "\(model.title) \(waves[0].title)" : "\(model.title) \(waves.count) waves"
+        let orientation = model.videoOrientation
+        let rate = rate
+        loop.pause()
+        exportProgress = 0
+        exportJob = Task {
+            defer {
+                exportProgress = nil
+                exportJob = nil
+            }
+            do {
+                let url = try await ClipExport.export(asset: asset, orientation: orientation, pieces: pieces,
+                                                      shown: shown, rate: rate, name: name) { exportProgress = $0 }
+                let saved = (try? await ClipExport.saveToPhotos(url)) != nil
+                setExporting(false)
+                if saved { show(note: "Saved to Photos") }
+                shared = SharedFile(url: url)
+            } catch is CancellationError {
+                loop.play()
+            } catch {
+                exportError = error.localizedDescription
+            }
+        }
+    }
+
+    private func show(note text: String) {
+        withAnimation { note = text }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            withAnimation { if note == text { note = nil } }
+        }
     }
 
     // MARK: Actions
@@ -704,7 +905,7 @@ struct LoopScrubBar: View {
 }
 
 /// The video, moved and scaled every screen refresh so the surfer stays in the
-/// middle at the size you'd have zoomed to by hand. Without a path it shows the
+/// middle, showing as much of the picture as you've zoomed to. Without a path it shows the
 /// whole picture, and a tap reports where in the picture it landed. A still
 /// frame to tap on can be pinched and dragged to look closer.
 struct FollowingVideoView: UIViewRepresentable {
@@ -712,7 +913,8 @@ struct FollowingVideoView: UIViewRepresentable {
     let videoSize: CGSize
     let orientation: CGImagePropertyOrientation
     let track: WaveTrack?
-    let zoom: Double
+    /// How much of the picture's height is shown top to bottom, as a share of it.
+    let span: Double
     /// The wave whose still frame is up to tap the surfer on, if any. A new one
     /// starts unzoomed.
     var stillID: Wave.ID?
@@ -733,7 +935,7 @@ struct FollowingVideoView: UIViewRepresentable {
         view.videoSize = videoSize
         view.orientation = orientation
         view.track = track
-        view.zoom = zoom
+        view.span = span
         view.stillID = stillID
         view.onTap = onTap
         view.onPlainTap = onPlainTap
@@ -753,8 +955,8 @@ final class FollowingPlayerView: UIView {
     var track: WaveTrack? {
         didSet { if track != oldValue { updateGestures() } }
     }
-    var zoom: Double = 1 {
-        didSet { if zoom != oldValue { needsRedraw = true } }
+    var span: Double = 0.5 {
+        didSet { if span != oldValue { needsRedraw = true } }
     }
     var stillID: UUID? {
         didSet { if stillID != oldValue { setStill(scale: 1, offset: .zero) } }
@@ -783,9 +985,11 @@ final class FollowingPlayerView: UIView {
 
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
-    /// How many surfers fit top to bottom, at zoom 1: what the clips cut by
-    /// hand showed.
+    /// How many surfers fit top to bottom, at zoom 1, back when zoom went by
+    /// the surfer's size: what the clips cut by hand showed.
     static let heightsInView = 9.0
+    /// The closest you can zoom in, as a share of the picture's height.
+    static let leastSpan = 0.04
 
     init(loop: LoopPlayer, comparing: Bool = false) {
         let player = loop.player
@@ -944,7 +1148,7 @@ final class FollowingPlayerView: UIView {
         // What part of the picture to show, as fractions of it, from the top-left.
         // Zoomed out past an edge of the picture, the rest is black, out to
         // where the whole picture fits.
-        let shownH = min(CGFloat(Double(track.height) * Self.heightsInView / zoom), wholeHeight)
+        let shownH = min(CGFloat(span), wholeHeight)
         let shownW = shownH * (bounds.width / bounds.height) / pictureAspect
         let view = FollowView(track: track, shownW: shownW, shownH: shownH, look: lookOffset)
         let pixels = bounds.height * traitCollection.displayScale
@@ -987,11 +1191,10 @@ final class FollowingPlayerView: UIView {
             let k = s / stillScale
             setStill(scale: s, offset: CGPoint(x: p.x - middle.x - (p.x - middle.x - stillOffset.x) * k,
                                                y: p.y - middle.y - (p.y - middle.y - stillOffset.y) * k))
-        } else if let track {
+        } else if track != nil {
             // Out as far as the whole picture.
-            let most = 4.0
-            let least = Double(track.height) * Self.heightsInView / Double(wholeHeight)
-            onZoom(min(max(least, zoom * Double(gesture.scale)), max(least, most)))
+            let most = Double(wholeHeight)
+            onZoom(min(max(Self.leastSpan, min(span, most) / Double(gesture.scale)), most))
         }
         gesture.scale = 1
     }
@@ -1024,4 +1227,21 @@ final class FollowingPlayerView: UIView {
     @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
         onSwipe(gesture.direction == .left ? 1 : -1)
     }
+}
+
+/// A finished export, for the share sheet.
+struct SharedFile: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+/// The system share sheet: AirDrop, Messages, Instagram, Save to Files…
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
