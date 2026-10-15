@@ -18,6 +18,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: PlayerModel
     @State private var showPhotos = false
     @State private var showFiles = false
+    @State private var showVideos = false
     @State private var controlsHidden = false
     @State private var showLoops = false
     @AppStorage(FineTape.spanKey) private var tapeSpan: Double = FineTape.defaultSpan
@@ -170,27 +171,47 @@ struct ContentView: View {
 
     // MARK: Pieces
 
+    /// Opening a video: from Photos, from Files, or one opened before. Tap a
+    /// recent video to open it; slide it left to remove it from the list.
     private var openMenu: some View {
-        Menu {
-            Button { openPhotos() } label: { Label("From Photos", systemImage: "photo.on.rectangle") }
-            Button { showFiles = true } label: { Label("From Files", systemImage: "folder") }
-            if !model.recents.isEmpty {
-                Section("Recent") {
-                    ForEach(model.recents) { recent in
-                        Menu {
-                            Button { model.openRecent(recent) } label: { Label("Open", systemImage: "play.fill") }
-                            Button(role: .destructive) { model.removeRecent(recent.id) } label: {
-                                Label("Remove", systemImage: "trash")
+        Button { showVideos = true } label: {
+            Image(systemName: "film.stack").font(.title3)
+        }
+        .popover(isPresented: $showVideos) {
+            List {
+                Section {
+                    Button { afterClosingVideos { openPhotos() } } label: {
+                        Label("From Photos", systemImage: "photo.on.rectangle")
+                    }
+                    Button { afterClosingVideos { showFiles = true } } label: {
+                        Label("From Files", systemImage: "folder")
+                    }
+                }
+                if !model.recents.isEmpty {
+                    Section("Recent") {
+                        ForEach(model.recents) { recent in
+                            Button {
+                                showVideos = false
+                                model.openRecent(recent)
+                            } label: {
+                                Label(recent.title, systemImage: recent.kind == .photo ? "photo" : "doc")
                             }
-                        } label: {
-                            Label(recent.title, systemImage: recent.kind == .photo ? "photo" : "doc")
+                        }
+                        .onDelete { offsets in
+                            for i in offsets { model.removeRecent(model.recents[i].id) }
                         }
                     }
                 }
             }
-        } label: {
-            Image(systemName: "film.stack").font(.title3)
+            .frame(minWidth: 300, minHeight: CGFloat(150 + 52 * min(model.recents.count, 6)))
+            .presentationCompactAdaptation(.popover)
         }
+    }
+
+    /// The list has to be gone before the Photos or Files picker can show.
+    private func afterClosingVideos(_ then: @escaping () -> Void) {
+        showVideos = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: then)
     }
 
     /// Opens the screen that loops each marked wave, following the surfer.
