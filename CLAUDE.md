@@ -35,13 +35,15 @@ to be renamed and recolored by hand. That gets tedious fast.
   (e.g. "Barrel" instead of K 3). It still keeps its place in the count, so
   the others don't shift. Clearing the name returns it to automatic (K 3).
   Renaming the person leaves hand-typed names alone.
-- **Colors with one person (or nobody):** tapping the dot changes that one
-  bookmark's color, as today.
-- **Colors with two or more people:** color means who it is, so tapping the
-  dot switches the bookmark to the next person instead. To change a color,
-  change the person's color.
-- When a second person is added, all of the first person's bookmarks take
-  that person's color.
+- **Colors:** a bookmark's color is always its person's color, whether
+  it's one person or several. Bookmarks are never colored on their own.
+  To change a color, change the person's color in the people button.
+- Tapping a bookmark's dot opens the list of people to switch it to someone
+  else. With one person, the list also offers "Add person".
+- A custom name is the only way to mark a special wave. No extra color,
+  star, or other marker.
+- When people are first set up, all existing bookmarks take their person's
+  color.
 
 ### 2. One tap per surfer to bookmark
 - With two or more people, the single flag becomes a row of colored buttons,
@@ -67,9 +69,10 @@ to be renamed and recolored by hand. That gets tedious fast.
 - Using the surfer's identity to help the tracker follow them.
 
 ### Must not break
-Until a second person is added, existing bookmarks keep their colors and any
-hand-typed names; only their Wave numbers are put back in time order.
-Naming the single person changes only the automatic labels.
+Existing bookmarks keep any hand-typed names; their Wave numbers are put
+back in time order. Their individual colors are replaced by their person's
+color (agreed with the owner). Naming a person changes only the automatic
+labels.
 
 ### Build order
 Time-ordered Wave numbers first (useful on its own), then adding people and the one-tap buttons, then the loop-screen filter.
