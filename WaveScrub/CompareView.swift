@@ -20,8 +20,8 @@ struct CompareView: View {
         GeometryReader { geo in
             let landscape = geo.size.width > geo.size.height
             let layout = landscape ? AnyLayout(HStackLayout(spacing: 2)) : AnyLayout(VStackLayout(spacing: 2))
-            VStack(spacing: 0) {
-                topBar(landscape: landscape)
+            // The videos fill the screen; the buttons float over the top of it.
+            ZStack(alignment: .top) {
                 layout {
                     ForEach(session.panes) { pane in
                         ComparePaneView(session: session, pane: pane, tapeSpan: $tapeSpan, compact: landscape) {
@@ -30,6 +30,12 @@ struct CompareView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
+                .ignoresSafeArea(edges: .top)
+                topBar(landscape: landscape)
+                    .background(
+                        LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+                            .ignoresSafeArea(edges: .top)
+                    )
             }
         }
         .background(Color.black.ignoresSafeArea())
@@ -86,8 +92,9 @@ struct CompareView: View {
     }
 }
 
-/// One of the two clips: its wave's name (tap to choose another), the video,
-/// and the tape to slide through it.
+/// One of the two clips: the video as large as it can be, with its wave's
+/// name (tap to choose another) and the tape to slide through it laid over
+/// the bottom of the picture.
 struct ComparePaneView: View {
     @EnvironmentObject private var model: PlayerModel
     @ObservedObject var session: CompareSession
@@ -97,8 +104,7 @@ struct ComparePaneView: View {
     let onChoose: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            header
+        ZStack(alignment: .bottom) {
             ZStack {
                 Color.black
                 if let clip = pane.clip {
@@ -126,20 +132,30 @@ struct ComparePaneView: View {
                     .buttonStyle(.bordered)
                 }
             }
-            .clipped()
-            if let clip = pane.clip {
-                HStack(spacing: 10) {
-                    PanePlayButton(clock: pane.loop.clock) { session.playPause(pane) }
-                    LoopTape(clock: pane.loop.clock, frameRate: clip.video.info.frameRate, span: $tapeSpan,
-                             onBegin: { session.beginSlide(pane) },
-                             onSlide: { session.slide(pane, to: $0) },
-                             onEnd: { session.endSlide(pane) })
+            if pane.clip != nil {
+                VStack(spacing: 6) {
+                    header
+                    if let clip = pane.clip {
+                        HStack(spacing: 10) {
+                            PanePlayButton(clock: pane.loop.clock) { session.playPause(pane) }
+                            LoopTape(clock: pane.loop.clock, frameRate: clip.video.info.frameRate, span: $tapeSpan,
+                                     onBegin: { session.beginSlide(pane) },
+                                     onSlide: { session.slide(pane, to: $0) },
+                                     onEnd: { session.endSlide(pane) })
+                        }
+                        .frame(height: compact ? 34 : 42)
+                        .padding(.horizontal, 12)
+                    }
                 }
-                .frame(height: compact ? 34 : 42)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 4)
+                .padding(.top, 24)
+                .padding(.bottom, 8)
+                .background(
+                    LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                        .allowsHitTesting(false)
+                )
             }
         }
+        .clipped()
     }
 
     private var header: some View {
@@ -175,7 +191,6 @@ struct ComparePaneView: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 4)
     }
 }
 
@@ -219,7 +234,7 @@ struct LoopTape: View {
     var body: some View {
         GeometryReader { geo in
             Canvas { ctx, size in draw(ctx, size: size) }
-                .background(Color.white.opacity(0.06))
+                .background(Color.black.opacity(0.35))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
                 .gesture(
