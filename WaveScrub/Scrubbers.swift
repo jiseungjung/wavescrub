@@ -94,7 +94,7 @@ struct OverviewStrip: View {
 /// A tape measure centred on the current frame. Drag it like film through a
 /// gate: slide left to go forward, right to go back. Pinch it to change how
 /// much time fits across — from 1 second (frame by frame) up to 10 minutes.
-/// The window button beside the play button flips it between 5s and 5m.
+/// The window button beside the play button flips it between 10s and 3m.
 struct FineTape: View {
     @EnvironmentObject private var model: PlayerModel
     @AppStorage(FineTape.spanKey) private var span: Double = FineTape.defaultSpan
@@ -102,10 +102,10 @@ struct FineTape: View {
     @State private var pinchStartSpan: Double?
 
     static let spanKey = "tapeWindow"
-    static let defaultSpan = 5.0
+    static let defaultSpan = 10.0
     static let minSpan = 1.0
     static let maxSpan = 600.0
-    static let searchSpan = 300.0
+    static let searchSpan = 180.0
 
     var body: some View {
         GeometryReader { geo in
