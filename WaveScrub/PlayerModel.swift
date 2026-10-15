@@ -124,6 +124,9 @@ final class PlayerModel: ObservableObject {
     /// The people sheet, opened from the top bar or a wave's dot.
     @Published var showingPeople = false
     @Published var selectedWaveID: Wave.ID?
+    /// The wave marked most recently, for the loop screen to start on when
+    /// you come back from finding waves.
+    var lastMarkedWaveID: Wave.ID?
     @Published private(set) var recents: [RecentVideo] = []
     @Published var errorMessage: String?
     /// Where the surfer is through each wave, keyed by the wave, once worked out.
@@ -462,6 +465,7 @@ final class PlayerModel: ObservableObject {
         waves.append(wave)
         saveWaves()
         selectedWaveID = wave.id
+        lastMarkedWaveID = wave.id
         trackPending()
     }
 

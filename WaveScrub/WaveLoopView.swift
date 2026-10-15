@@ -12,7 +12,10 @@ import UIKit
 /// there; they're followed back to the bookmark either way.
 struct WaveLoopView: View {
     @EnvironmentObject private var model: PlayerModel
-    @Environment(\.dismiss) private var dismiss
+    /// Opens the list of videos; it lives with the app, not this screen.
+    var videosButton = AnyView(EmptyView())
+    /// Switches to finding waves.
+    var onFind: () -> Void = {}
     @StateObject private var loop = LoopPlayer()
     @State private var waveID: Wave.ID?
     @State private var picking = false
@@ -53,9 +56,13 @@ struct WaveLoopView: View {
             VStack(spacing: 0) {
                 topBar
                 Spacer()
-                if let status { statusLabel(status) }
+                if model.waves.isEmpty {
+                    noWaves
+                } else if let status {
+                    statusLabel(status)
+                }
                 Spacer()
-                bottomPanel
+                if !model.waves.isEmpty { bottomPanel }
             }
         }
         .statusBarHidden()
@@ -73,9 +80,12 @@ struct WaveLoopView: View {
         .onAppear {
             model.player.pause()
             loop.rate = rate
-            waveID = model.selectedWaveID
+            // Back from finding waves: start on the one just marked.
+            waveID = model.lastMarkedWaveID.flatMap { id in model.waves.first { $0.id == id }?.id }
+                ?? model.selectedWaveID
                 ?? model.waves.last(where: { $0.time <= model.currentTime })?.id
                 ?? model.waves.first?.id
+            model.lastMarkedWaveID = nil
         }
         .onDisappear {
             loop.stop()
@@ -115,25 +125,18 @@ struct WaveLoopView: View {
 
     private var topBar: some View {
         HStack(spacing: 18) {
-            // To the scrubbing screen, to find more waves.
-            Button { dismiss() } label: {
-                Image(systemName: "magnifyingglass").font(.title3)
-            }
-            .accessibilityLabel("Find waves")
-            Spacer()
+            videosButton
+            Text(model.title)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(1)
+            Spacer(minLength: 8)
             // This wave beside another, from this video or a different one.
             Button {
                 loop.pause()
                 comparing = true
             } label: {
                 Image(systemName: "rectangle.split.1x2").font(.title3)
-            }
-            .disabled(picking || wave == nil)
-            // Wrong person, or the ride cut short: tap the surfer again.
-            Button {
-                beginPicking()
-            } label: {
-                Image(systemName: "person.crop.rectangle").font(.title3)
             }
             .disabled(picking || wave == nil)
             if let wave {
@@ -145,11 +148,52 @@ struct WaveLoopView: View {
                 Text(rate == 1 ? "1×" : rate == 0.5 ? "½×" : "¼×")
                     .font(.system(.callout, design: .monospaced))
             }
+            // Things done now and then.
+            Menu {
+                Button { model.showingPeople = true } label: {
+                    Label("Who's surfing", systemImage: "person.2")
+                }
+                // Wrong person, or the ride cut short: tap the surfer again.
+                Button { beginPicking() } label: {
+                    Label("Tap the surfer again", systemImage: "person.crop.rectangle")
+                }
+                .disabled(picking || wave == nil)
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.title3)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 10)
         .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
+    }
+
+    private var findButton: some View {
+        Button(action: onFind) {
+            Label("Find waves", systemImage: "flag")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.16), in: Capsule())
+        }
+    }
+
+    /// A video with nothing marked yet: one step, find waves.
+    private var noWaves: some View {
+        VStack(spacing: 14) {
+            Text("No waves marked yet")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Button(action: onFind) {
+                Label("Find waves", systemImage: "flag")
+                    .font(.body.weight(.semibold))
+                    .padding(.horizontal, 6)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private enum Status { case pick, finding }
@@ -208,6 +252,8 @@ struct WaveLoopView: View {
             if showsFilter { surferFilter.padding(.top, wave == nil ? 12 : 4) }
             waveNames
                 .padding(.top, showsFilter ? 10 : wave == nil ? 12 : 2)
+            findButton
+                .padding(.bottom, 6)
         }
         .background {
             if wave == nil {

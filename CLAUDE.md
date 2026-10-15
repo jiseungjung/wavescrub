@@ -9,6 +9,19 @@ The owner is vibe coding. Talk about what the app does and how it feels to
 use, not about code, files, or function names. Make the changes, test them,
 and report the result in plain language.
 
+## How the app is laid out (agreed 2026-10-15)
+
+- **Home is the loop screen.** Every video opens on it. Top bar: videos
+  button and title, then compare, star, speed, and a ⋯ menu (who's surfing,
+  tap the surfer again). Under the wave list: "Find waves".
+- **Finding waves is a mode, not a screen.** It fades in place (like Edit in
+  Photos) with Done top-left; Done fades back to the loop, on the wave marked
+  last. It holds the scrubbing tapes and the flag / surfer buttons.
+- A video with no waves still opens on home, showing "No waves marked yet"
+  and a Find waves button.
+- Compare opens from home's top bar; it has jog strips per clip, one shared
+  strip when linked.
+
 ## Planned: tagging several surfers in one video
 
 Status: built and installed on 2026-10-15.

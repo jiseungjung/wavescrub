@@ -20,7 +20,8 @@ struct ContentView: View {
     @State private var showFiles = false
     @State private var showVideos = false
     @State private var controlsHidden = false
-    @State private var showLoops = false
+    /// Finding waves, rather than watching them on the loop screen.
+    @State private var finding = false
     @AppStorage(FineTape.spanKey) private var tapeSpan: Double = FineTape.defaultSpan
 
     var body: some View {
@@ -29,7 +30,15 @@ struct ContentView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if model.hasVideo {
-                    if landscape { landscapeLayout } else { portraitLayout }
+                    // The loop screen is home; finding waves is a mode you
+                    // switch into in place, like editing in Photos.
+                    if finding {
+                        Group { if landscape { landscapeLayout } else { portraitLayout } }
+                            .transition(.opacity)
+                    } else {
+                        WaveLoopView(videosButton: AnyView(openMenu)) { setFinding(true) }
+                            .transition(.opacity)
+                    }
                 } else {
                     emptyState
                 }
@@ -65,17 +74,8 @@ struct ContentView: View {
                 .environmentObject(model)
                 .presentationDetents([.medium, .large])
         }
-        // Watching waves is what the app is mostly for: a video that has
-        // bookmarks opens straight on the loop screen. This screen is for
-        // finding them.
-        .onChange(of: model.openedCount) {
-            if !model.waves.isEmpty { showLoops = true }
-        }
-        .fullScreenCover(isPresented: $showLoops) {
-            WaveLoopView()
-                .environmentObject(model)
-                .preferredColorScheme(.dark)
-        }
+        // Every video opens on the loop screen.
+        .onChange(of: model.openedCount) { finding = false }
         .alert("Can't open video", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -92,12 +92,13 @@ struct ContentView: View {
     /// Upright: video on top, both scrubbers big underneath for your thumb.
     private var portraitLayout: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 18) {
-                openMenu
-                loopButton
-                peopleButton
-                Spacer()
-                Text(model.title).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            ZStack {
+                Text("Find waves").font(.headline)
+                HStack {
+                    doneButton
+                    Spacer()
+                    peopleButton
+                }
             }
             .padding(.horizontal, 14)
 
@@ -126,8 +127,7 @@ struct ContentView: View {
             if !controlsHidden {
                 VStack(spacing: 4) {
                     HStack(spacing: 14) {
-                        openMenu
-                        loopButton
+                        doneButton
                         peopleButton
                         timeLabel
                         waveTag
@@ -285,12 +285,15 @@ struct ContentView: View {
         then()
     }
 
-    /// Opens the screen that loops each marked wave, following the surfer.
-    private var loopButton: some View {
-        Button { showLoops = true } label: {
-            Image(systemName: "repeat").font(.title3)
-        }
-        .disabled(model.waves.isEmpty)
+    /// Back to watching, on the wave marked last.
+    private var doneButton: some View {
+        Button("Done") { setFinding(false) }
+            .font(.body.weight(.semibold))
+    }
+
+    private func setFinding(_ on: Bool) {
+        if !on { model.player.pause() }
+        withAnimation(.easeInOut(duration: 0.25)) { finding = on }
     }
 
     /// Who's surfing in this video. Only you, unless you add someone.
