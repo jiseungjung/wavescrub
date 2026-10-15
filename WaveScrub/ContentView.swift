@@ -58,6 +58,11 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
+        .sheet(isPresented: $model.showingPeople) {
+            PeopleSheet()
+                .environmentObject(model)
+                .presentationDetents([.medium, .large])
+        }
         .fullScreenCover(isPresented: $showLoops) {
             WaveLoopView()
                 .environmentObject(model)
@@ -82,6 +87,7 @@ struct ContentView: View {
             HStack(spacing: 18) {
                 openMenu
                 loopButton
+                peopleButton
                 Spacer()
                 Text(model.title).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -114,6 +120,7 @@ struct ContentView: View {
                     HStack(spacing: 14) {
                         openMenu
                         loopButton
+                        peopleButton
                         timeLabel
                         waveTag
                         Spacer(minLength: 8)
@@ -194,6 +201,13 @@ struct ContentView: View {
         .disabled(model.waves.isEmpty)
     }
 
+    /// Who's surfing in this video. Only you, unless you add someone.
+    private var peopleButton: some View {
+        Button { model.showingPeople = true } label: {
+            Image(systemName: model.surfers.count > 1 ? "person.2.fill" : "person.2").font(.title3)
+        }
+    }
+
     private var timeLabel: some View {
         Text(formatTime(model.currentTime))
             .font(.system(.callout, design: .monospaced))
@@ -204,11 +218,14 @@ struct ContentView: View {
         // Every label is its own width (no padding frames), so the gaps
         // between them are exactly the spacing and all equal.
         HStack(spacing: 14) {
-            // Off a wave, marks one here. On a wave, deletes it.
+            // Off a wave, marks one here: with the flag when it's only you, or
+            // with the button of whoever is riding. On a wave, deletes it.
             if let wave = selectedWave {
                 Button { model.deleteWave(wave.id) } label: {
                     Image(systemName: "trash").font(.title3)
                 }
+            } else if model.surfers.count > 1 {
+                SurferButtons()
             } else {
                 Button {
                     model.markWave()
@@ -253,8 +270,8 @@ struct ContentView: View {
     }
 }
 
-/// A wave's name you can type into directly, and its dot: tap the dot for
-/// the next color.
+/// A wave's name you can type into directly, and its dot: tap the dot to
+/// say who rode it. The color is always theirs.
 struct WaveTag: View {
     @EnvironmentObject private var model: PlayerModel
     let wave: Wave
@@ -264,10 +281,18 @@ struct WaveTag: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Button {
-                let all = WaveColor.allCases
-                let next = all[(all.firstIndex(of: wave.color)! + 1) % all.count]
-                model.setColor(wave.id, to: next)
+            Menu {
+                Picker("Surfer", selection: Binding(
+                    get: { wave.surferID },
+                    set: { if let id = $0 { model.setSurfer(wave.id, to: id) } }
+                )) {
+                    ForEach(model.surfers) { surfer in
+                        Label(surfer.name.isEmpty ? "Me" : surfer.name, systemImage: "circle.fill")
+                            .tint(surfer.color.color)
+                            .tag(Optional(surfer.id))
+                    }
+                }
+                Button { model.showingPeople = true } label: { Label("Add person", systemImage: "person.badge.plus") }
             } label: {
                 Circle().fill(wave.color.color).frame(width: 12, height: 12)
                     .padding(4)
@@ -280,7 +305,12 @@ struct WaveTag: View {
                     .fixedSize()
                     .focused($focused)
                     .onAppear { DispatchQueue.main.async { focused = true } }
-                    .onChange(of: focused) { if !focused { typing = false } }
+                    .onChange(of: focused) {
+                        if !focused {
+                            typing = false
+                            name = wave.name
+                        }
+                    }
                     .onChange(of: name) { model.renameWave(wave.id, to: name) }
             } else {
                 Text(name.isEmpty ? "Name" : name)
@@ -300,5 +330,7 @@ struct WaveTag: View {
             name = wave.name
             typing = false
         }
+        // Renumbered or renamed from elsewhere.
+        .onChange(of: wave.name) { if !typing { name = wave.name } }
     }
 }

@@ -19,6 +19,8 @@ struct WaveLoopView: View {
     /// The frame shown to tap the surfer on.
     @State private var pickTime: Double = 0
     @State private var rate: Float = 1
+    /// Only this surfer's waves, or everyone's.
+    @State private var onlySurfer: Surfer.ID?
     @AppStorage("loopZoom") private var zoom: Double = 1
 
     /// How long to loop from a bookmark while the surfer is still being found.
@@ -78,6 +80,11 @@ struct WaveLoopView: View {
     }
 
     private var wave: Wave? { model.waves.first { $0.id == waveID } }
+    /// The waves you can go through: everyone's, or one surfer's.
+    private var shownWaves: [Wave] {
+        guard let onlySurfer else { return model.waves }
+        return model.waves.filter { $0.surferID == onlySurfer }
+    }
     private var track: WaveTrack? { waveID.flatMap { model.tracks[$0] } }
 
     // MARK: Pieces
@@ -161,8 +168,9 @@ struct WaveLoopView: View {
             } else if wave != nil {
                 LoopScrubBar(loop: loop, clock: loop.clock)
             }
+            if model.surfers.count > 1 { surferFilter.padding(.top, wave == nil ? 12 : 4) }
             waveNames
-                .padding(.top, wave == nil ? 12 : 2)
+                .padding(.top, wave == nil && model.surfers.count < 2 ? 12 : 2)
         }
         .background {
             if wave == nil {
@@ -174,12 +182,43 @@ struct WaveLoopView: View {
         }
     }
 
-    /// Every wave by the name and color you gave its bookmark, in time order.
+    /// All · each surfer: pick one to go through only their waves.
+    private var surferFilter: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                filterChip("All", color: .white, selected: onlySurfer == nil) { onlySurfer = nil }
+                ForEach(model.surfers) { surfer in
+                    filterChip(surfer.label, color: surfer.color.color, selected: onlySurfer == surfer.id) {
+                        onlySurfer = surfer.id
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .onChange(of: onlySurfer) {
+            if !shownWaves.contains(where: { $0.id == waveID }) {
+                waveID = shownWaves.last(where: { $0.time <= (wave?.time ?? 0) })?.id ?? shownWaves.first?.id
+            }
+        }
+    }
+
+    private func filterChip(_ title: String, color: Color, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(selected ? .black : .white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(selected ? color : color.opacity(0.18), in: Capsule())
+        }
+    }
+
+    /// Every wave by its name and its surfer's color, in time order.
     private var waveNames: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(model.waves) { w in
+                    ForEach(shownWaves) { w in
                         Button { waveID = w.id } label: {
                             HStack(spacing: 6) {
                                 Circle().fill(w.color.color).frame(width: 10, height: 10)
@@ -208,10 +247,11 @@ struct WaveLoopView: View {
     // MARK: Actions
 
     private func step(_ by: Int) {
-        guard let i = model.waves.firstIndex(where: { $0.id == waveID }) else { return }
+        let waves = shownWaves
+        guard let i = waves.firstIndex(where: { $0.id == waveID }) else { return }
         let next = i + by
-        guard model.waves.indices.contains(next) else { return }
-        waveID = model.waves[next].id
+        guard waves.indices.contains(next) else { return }
+        waveID = waves[next].id
     }
 
     private func beginPicking() {

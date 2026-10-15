@@ -11,7 +11,7 @@ and report the result in plain language.
 
 ## Planned: tagging several surfers in one video
 
-Status: proposed on 2026-10-15 and revised with the owner the same day. Not built yet.
+Status: built and installed on 2026-10-15.
 
 **Problem.** When one video has waves from several people, each bookmark has
 to be renamed and recolored by hand. That gets tedious fast.
