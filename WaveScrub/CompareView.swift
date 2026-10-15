@@ -19,7 +19,8 @@ struct CompareView: View {
     var body: some View {
         GeometryReader { geo in
             let landscape = geo.size.width > geo.size.height
-            let layout = landscape ? AnyLayout(HStackLayout(spacing: 2)) : AnyLayout(VStackLayout(spacing: 2))
+            // No gap between the clips: they meet edge to edge.
+            let layout = landscape ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             // The videos fill the screen; the buttons float over the top of it.
             ZStack(alignment: .top) {
                 layout {
