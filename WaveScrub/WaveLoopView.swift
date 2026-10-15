@@ -449,11 +449,23 @@ final class LoopPlayer: ObservableObject {
     private var timeObserver: Any?
     private var rateObserver: NSKeyValueObservation?
 
-    /// A compact player is one of two side by side: silent, and keeping
-    /// smaller frames for sliding.
+    /// A compact player is one of two side by side: silent, and keeping the
+    /// whole wave ready for sliding once it's been got ready, at a little less
+    /// detail. Two clips at once get ready half as fast, and linked sliding
+    /// sweeps the whole wave back and forth: keeping only a few seconds, the
+    /// same ones were made over and over and the picture kept stopping.
     init(compact: Bool = false) {
-        frames = compact ? LoopFrames(reach: 1) : LoopFrames()
+        frames = compact ? LoopFrames(reach: 15) : LoopFrames()
         player.isMuted = compact
+        defer {
+            // A second got ready while the finger waits on it: catch up.
+            frames.onReady = { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.scrubbing, let frame = self.frames.frame(at: self.clock.time) else { return }
+                    self.slideFrame = frame
+                }
+            }
+        }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, !self.seeking, !self.scrubbing, self.player.currentItem != nil else { return }
@@ -502,6 +514,7 @@ final class LoopPlayer: ObservableObject {
     /// the surfer on.
     func still(_ asset: AVAsset, at time: Double) {
         clear()
+        frames.reset(nil, from: 0, to: 0)
         let item = AVPlayerItem(asset: asset)
         player.insert(item, after: nil)
         player.pause()
@@ -518,12 +531,17 @@ final class LoopPlayer: ObservableObject {
         if !seeking { seekToWanted() }
     }
 
-    /// Moves while sliding: to a frame got ready, when there is one, and
-    /// otherwise as `show` does.
+    /// Moves while sliding: to a frame got ready, when there is one. While
+    /// frames are being got ready, one that isn't yet holds the picture until
+    /// it is, rather than seeking: seeks took as long as getting a whole
+    /// second ready, slowed it down, and landed out of step, so the picture
+    /// lurched. The exact frame is shown when the finger lifts.
     func slide(_ time: Double) {
         if let frame = frames.frame(at: time) {
             clock.time = time
             slideFrame = frame
+        } else if scrubbing, frames.isActive {
+            clock.time = time
         } else {
             show(time)
         }
@@ -588,13 +606,14 @@ final class LoopPlayer: ObservableObject {
 
     func stop() {
         clear()
+        frames.reset(nil, from: 0, to: 0)
     }
 
+    /// Frames got ready are left to `loop`, which keeps them when it can.
     private func clear() {
         seeking = false
         seekRun += 1
         slideFrame = nil
-        frames.reset(nil, from: 0, to: 0)
         looper?.disableLooping()
         looper = nil
         range = nil
@@ -918,7 +937,9 @@ final class FollowingPlayerView: UIView {
         let shownW = shownH * (bounds.width / bounds.height) / pictureAspect
         let view = FollowView(track: track, shownW: shownW, shownH: shownH, look: lookOffset)
         let pixels = bounds.height * traitCollection.displayScale
-        loop?.follow(view, pixels: pixels, orientation: orientation)
+        // Compared clips keep their whole wave ready, so at 2× rather than 3×.
+        loop?.follow(view, pixels: comparing ? bounds.height * min(2, traitCollection.displayScale) : pixels,
+                     orientation: orientation)
         let shown = view.rect(at: frame.time)
         // Core Image measures from the bottom-left.
         let crop = CGRect(x: image.extent.minX + (shown.minX - region.minX) * w,

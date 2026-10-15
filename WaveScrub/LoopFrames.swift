@@ -91,9 +91,26 @@ final class LoopFrames: @unchecked Sendable {
         self.reach = reach
     }
 
-    /// Starts over for a new loop, with nothing decoded yet.
+    /// Called on the main queue each time another second is ready.
+    var onReady: (() -> Void)?
+
+    /// Whether frames are being got ready at all.
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return asset != nil
+    }
+
+    /// Starts over for a new loop, with nothing decoded yet. The same video
+    /// over a part of the loop already being got ready (as when two clips
+    /// are linked) keeps what's done.
     func reset(_ asset: AVAsset?, from start: Double, to end: Double) {
         lock.lock()
+        if let asset, asset === self.asset, track != nil,
+           start >= range.start.seconds - 0.001, end <= range.end.seconds + 0.001 {
+            lock.unlock()
+            return
+        }
         run += 1
         let run = run
         self.asset = asset
@@ -143,6 +160,9 @@ final class LoopFrames: @unchecked Sendable {
         }
         for key in seconds.keys where abs(key - i) > reach { seconds[key] = nil }
         if decoding == nil { pump() }
+        // The last sliver of a loop can hold no frames of its own: show the
+        // last one before it.
+        if let second = seconds[i], second.isEmpty, i > 0 { return seconds[i - 1]?.last }
         return seconds[i]?.last { $0.time <= time + 0.001 } ?? seconds[i]?.first
     }
 
@@ -193,7 +213,8 @@ final class LoopFrames: @unchecked Sendable {
     /// first. Called with the lock held.
     private func pump() {
         guard decoding == nil, let asset, let track, let view, !starts.isEmpty, Self.memoryToSpare else { return }
-        let order = [0, direction, -direction, 2 * direction, -2 * direction].map { wanted + $0 }
+        // Outward from where you are, your way first, as far as the reach.
+        let order = [wanted] + (1...max(1, reach)).flatMap { [wanted + $0 * direction, wanted - $0 * direction] }
         guard let next = order.first(where: {
             starts.indices.contains($0) && seconds[$0] == nil && abs($0 - wanted) <= reach
         }) else { return }
@@ -215,6 +236,7 @@ final class LoopFrames: @unchecked Sendable {
             self.decoding = nil
             if abs(next - self.wanted) <= self.reach { self.seconds[next] = frames }
             self.pump()
+            if let onReady = self.onReady { DispatchQueue.main.async(execute: onReady) }
         }
     }
 
