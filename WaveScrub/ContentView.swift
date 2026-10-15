@@ -65,6 +65,12 @@ struct ContentView: View {
                 .environmentObject(model)
                 .presentationDetents([.medium, .large])
         }
+        // Watching waves is what the app is mostly for: a video that has
+        // bookmarks opens straight on the loop screen. This screen is for
+        // finding them.
+        .onChange(of: model.openedCount) {
+            if !model.waves.isEmpty { showLoops = true }
+        }
         .fullScreenCover(isPresented: $showLoops) {
             WaveLoopView()
                 .environmentObject(model)

@@ -115,9 +115,11 @@ struct WaveLoopView: View {
 
     private var topBar: some View {
         HStack(spacing: 18) {
+            // To the scrubbing screen, to find more waves.
             Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.title3)
+                Image(systemName: "magnifyingglass").font(.title3)
             }
+            .accessibilityLabel("Find waves")
             Spacer()
             // This wave beside another, from this video or a different one.
             Button {

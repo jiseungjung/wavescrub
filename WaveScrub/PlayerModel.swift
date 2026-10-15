@@ -106,6 +106,8 @@ final class PlayerModel: ObservableObject {
     let player = AVPlayer()
 
     @Published private(set) var hasVideo = false
+    /// Goes up each time a video finishes opening.
+    @Published private(set) var openedCount = 0
     @Published private(set) var title = ""
     @Published private(set) var duration: Double = 0
     @Published private(set) var currentTime: Double = 0
@@ -342,6 +344,7 @@ final class PlayerModel: ObservableObject {
         if let resumeAt, resumeAt > 0, resumeAt < duration { seek(to: resumeAt, tolerance: 0) }
         generateThumbnails()
         trackPending()
+        openedCount += 1
     }
 
     /// The open video's length, frame rate, size and how it's turned.
