@@ -178,17 +178,20 @@ struct ContentView: View {
             Image(systemName: "film.stack").font(.title3)
         }
         .popover(isPresented: $showVideos) {
-            List {
-                Section {
-                    Button { afterClosingVideos { openPhotos() } } label: {
-                        Label("From Photos", systemImage: "photo.on.rectangle")
-                    }
-                    Button { afterClosingVideos { showFiles = true } } label: {
-                        Label("From Files", systemImage: "folder")
-                    }
-                }
+            VStack(spacing: 0) {
+                // Always there; only the recent videos below scroll.
+                videoSourceRow("From Photos", icon: "photo.on.rectangle") { afterClosingVideos { openPhotos() } }
+                Divider().padding(.leading, 52)
+                videoSourceRow("From Files", icon: "folder") { afterClosingVideos { showFiles = true } }
                 if !model.recents.isEmpty {
-                    Section("Recent") {
+                    Text("RECENT")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+                        .padding(.bottom, 4)
+                    List {
                         ForEach(model.recents) { recent in
                             Button {
                                 showVideos = false
@@ -201,10 +204,22 @@ struct ContentView: View {
                             for i in offsets { model.removeRecent(model.recents[i].id) }
                         }
                     }
+                    .listStyle(.plain)
+                    .frame(height: CGFloat(min(model.recents.count, 5)) * 48)
                 }
             }
-            .frame(minWidth: 300, minHeight: CGFloat(150 + 52 * min(model.recents.count, 6)))
+            .frame(width: 300)
             .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func videoSourceRow(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                .contentShape(Rectangle())
         }
     }
 
