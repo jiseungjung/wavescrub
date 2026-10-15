@@ -340,7 +340,7 @@ final class LoopPlayer: ObservableObject {
     init() {
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self, !self.seeking, self.player.currentItem != nil else { return }
+                guard let self, !self.seeking, !self.scrubbing, self.player.currentItem != nil else { return }
                 self.clock.time = time.seconds
             }
         }
@@ -411,6 +411,21 @@ final class LoopPlayer: ObservableObject {
     }
     func pause() { player.pause() }
 
+    /// While a finger is on the bar, only the finger moves it: the playing
+    /// loop's own clock is ignored until the finger lifts.
+    private(set) var scrubbing = false
+
+    func beginScrub() {
+        scrubbing = true
+        player.pause()
+    }
+
+    /// Lands on the exact frame and stays paused there.
+    func endScrub() {
+        scrubbing = false
+        show(clock.time)
+    }
+
     private var wantedFrame = CMTime.zero
     private var seeking = false
     /// Changes with each new still or loop, so a seek begun on the last one
@@ -457,12 +472,12 @@ final class LoopClock: ObservableObject {
 }
 
 /// Plays and pauses the loop, and slides through it a frame at a time, as
-/// the bar for tapping the surfer does. Sliding pauses the loop until you let
-/// go, then it carries on if it was playing.
+/// the bar for tapping the surfer does. Touching it pauses the loop, and it
+/// stays paused on the frame you let go of.
 struct LoopScrubBar: View {
     let loop: LoopPlayer
     @ObservedObject var clock: LoopClock
-    @State private var wasPlaying: Bool?
+    @State private var dragging = false
 
     var body: some View {
         let end = max(clock.end, clock.start + 0.1)
@@ -473,18 +488,7 @@ struct LoopScrubBar: View {
                 Image(systemName: clock.playing ? "pause.fill" : "play.fill")
                     .frame(width: 20)
             }
-            Slider(value: Binding(get: { min(max(clock.time, clock.start), end) }, set: { loop.slide($0) }),
-                   in: clock.start...end) { editing in
-                if editing {
-                    wasPlaying = clock.playing
-                    loop.pause()
-                } else {
-                    loop.show(clock.time)
-                    if wasPlaying == true { loop.play() }
-                    wasPlaying = nil
-                }
-            }
-            .tint(.white)
+            bar(end: end)
             Text(String(format: "%.1fs", max(0, clock.time - clock.start)))
                 .font(.system(.callout, design: .monospaced))
                 .frame(width: 56, alignment: .trailing)
@@ -492,6 +496,44 @@ struct LoopScrubBar: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    /// Touch anywhere on it to pause and jump there, then slide. It stays
+    /// paused when you let go; press play to carry on.
+    private func bar(end: Double) -> some View {
+        GeometryReader { geo in
+            let thumb: CGFloat = dragging ? 26 : 22
+            let usable = max(1, geo.size.width - thumb)
+            let fraction = (min(max(clock.time, clock.start), end) - clock.start) / (end - clock.start)
+            let x = thumb / 2 + usable * CGFloat(fraction)
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.25)).frame(height: 4)
+                Capsule().fill(.white).frame(width: x, height: 4)
+                Circle().fill(.white)
+                    .frame(width: thumb, height: thumb)
+                    .shadow(color: .black.opacity(0.3), radius: 2)
+                    .offset(x: x - thumb / 2)
+            }
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !dragging {
+                            dragging = true
+                            loop.beginScrub()
+                        }
+                        let f = min(max(0, (value.location.x - thumb / 2) / usable), 1)
+                        loop.slide(clock.start + Double(f) * (end - clock.start))
+                    }
+                    .onEnded { _ in
+                        dragging = false
+                        loop.endScrub()
+                    }
+            )
+            .animation(.easeOut(duration: 0.12), value: dragging)
+        }
+        .frame(height: 32)
     }
 }
 
