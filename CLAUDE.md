@@ -62,4 +62,4 @@ Until a second person is added, existing bookmarks keep their colors and any
 hand-typed names; only their Wave numbers are put back in time order.
 
 ### Build order
-Time-ordered Wave numbers first (useful on its own), then adding people and the one-tap buttons first, then the loop-screen filter.
+Time-ordered Wave numbers first (useful on its own), then adding people and the one-tap buttons, then the loop-screen filter.
