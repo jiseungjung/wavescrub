@@ -62,9 +62,15 @@ struct PeopleSheet: View {
                         model.addSurfer()
                         focused = model.surfers.last?.id
                     } label: {
-                        Label("Add person", systemImage: "person.badge.plus")
+                        HStack(spacing: Self.gap) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: Self.dot))
+                                .frame(width: Self.column)
+                            Text("Add person")
+                        }
                     }
                     .disabled(!model.canAddSurfer)
+                    .modifier(FullWidthSeparator())
                 } footer: {
                     if !model.canAddSurfer {
                         Text("Give yourself a name first, then add someone else.")
@@ -77,13 +83,16 @@ struct PeopleSheet: View {
                     Section("Surfed with before") {
                         ForEach(suggestions, id: \.name) { known in
                             Button { model.addSurfer(name: known.name, color: known.color) } label: {
-                                HStack(spacing: 10) {
-                                    Circle().fill(known.color.color).frame(width: 14, height: 14)
+                                HStack(spacing: Self.gap) {
+                                    Circle().fill(known.color.color)
+                                        .frame(width: Self.dot, height: Self.dot)
+                                        .frame(width: Self.column)
                                     Text(known.name).foregroundStyle(.primary)
                                     Spacer()
-                                    Image(systemName: "plus.circle")
+                                    Image(systemName: "plus")
                                 }
                             }
+                            .modifier(FullWidthSeparator())
                         }
                     }
                 }
@@ -101,14 +110,21 @@ struct PeopleSheet: View {
         }
     }
 
+    /// Every row's dot or icon sits in one column, so the names line up.
+    private static let dot: CGFloat = 24
+    private static let column: CGFloat = 30
+    private static let gap: CGFloat = 12
+
     private func row(_ surfer: Surfer, isMe: Bool) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.gap) {
             Menu {
                 ForEach(WaveColor.allCases) { color in
                     Button(color.name) { model.setSurferColor(surfer.id, to: color) }
                 }
             } label: {
-                Circle().fill(surfer.color.color).frame(width: 22, height: 22)
+                Circle().fill(surfer.color.color)
+                    .frame(width: Self.dot, height: Self.dot)
+                    .frame(width: Self.column)
             }
             TextField(isMe ? "Your name" : "Name", text: Binding(
                 get: { surfer.name },
@@ -116,13 +132,29 @@ struct PeopleSheet: View {
             ))
             .focused($focused, equals: surfer.id)
             .submitLabel(.done)
-            if isMe { Text("You").font(.footnote).foregroundStyle(.secondary) }
+            if isMe {
+                Text("You")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.2), in: Capsule())
+            }
         }
+        .modifier(FullWidthSeparator())
     }
 
     /// People from other videos who aren't in this one yet.
     private var suggestions: [KnownSurfer] {
         let here = Set(model.surfers.map { $0.name.trimmingCharacters(in: .whitespaces).lowercased() })
         return model.knownSurfers.filter { !here.contains($0.name.lowercased()) }.prefix(8).map { $0 }
+    }
+}
+
+/// Lines between rows run from the row's edge, not from where the text
+/// starts — otherwise they look like an underline under the name.
+private struct FullWidthSeparator: ViewModifier {
+    func body(content: Content) -> some View {
+        content.alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
     }
 }
