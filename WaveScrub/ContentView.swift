@@ -248,6 +248,7 @@ struct ContentView: View {
         Text(formatTime(model.currentTime))
             .font(.system(.callout, design: .monospaced))
             .foregroundStyle(.white)
+            .fixedSize()
     }
 
     private var transport: some View {
@@ -277,6 +278,7 @@ struct ContentView: View {
             } label: {
                 Text(FineTape.spanLabel(tapeSpan))
                     .font(.system(.callout, design: .monospaced))
+                    .fixedSize()
             }
             Button { model.togglePlay() } label: {
                 Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").font(.title2)
