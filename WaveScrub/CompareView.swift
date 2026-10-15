@@ -30,7 +30,7 @@ struct CompareView: View {
                         // screen; the clips along it leave room for it.
                         let alongBottom = landscape || index == session.panes.count - 1
                         ComparePaneView(session: session, pane: pane, tapeSpan: $tapeSpan, compact: landscape,
-                                        reserveBottom: session.linked && alongBottom ? Self.stripHeight + 12 : 0) {
+                                        reserveBottom: session.linked && alongBottom ? Self.stripHeight : 0) {
                             choosingFor = pane
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -45,8 +45,6 @@ struct CompareView: View {
                                  onSlide: { session.slide(lead, to: $0) },
                                  onEnd: { session.endSlide(lead) })
                             .frame(height: Self.stripHeight)
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 8)
                             .transition(.opacity)
                     }
                 }
@@ -77,7 +75,7 @@ struct CompareView: View {
         }
     }
 
-    static let stripHeight: CGFloat = 30
+    static let stripHeight: CGFloat = 48
 
     private func topBar(landscape: Bool) -> some View {
         HStack(spacing: 22) {
@@ -166,16 +164,17 @@ struct ComparePaneView: View {
                                  onSlide: { session.slide(pane, to: $0) },
                                  onEnd: { session.endSlide(pane) })
                             .frame(height: CompareView.stripHeight)
-                            .padding(.horizontal, 12)
                     }
                 }
                 .padding(.top, 24)
-                .padding(.bottom, 8 + reserveBottom)
+                .padding(.bottom, session.linked ? 8 + reserveBottom : 0)
                 .background(
                     LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom)
                         .allowsHitTesting(false)
                 )
+                // Sits on top of whichever strip runs along this clip's bottom.
                 ClipProgress(clock: pane.loop.clock)
+                    .padding(.bottom, session.linked ? reserveBottom : CompareView.stripHeight)
             }
         }
         .clipped()
@@ -261,7 +260,7 @@ struct JogStrip: View {
     var body: some View {
         GeometryReader { geo in
             Canvas { ctx, size in draw(ctx, size: size) }
-                .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(Color.black.opacity(0.35))
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
@@ -306,14 +305,13 @@ struct JogStrip: View {
             if x >= 0 {
                 let nearness = 1 - min(abs(x - mid) / mid, 1)
                 var ridge = Path()
-                ridge.move(to: CGPoint(x: x, y: size.height * 0.25))
-                ridge.addLine(to: CGPoint(x: x, y: size.height * 0.75))
+                ridge.move(to: CGPoint(x: x, y: size.height * 0.2))
+                ridge.addLine(to: CGPoint(x: x, y: size.height * 0.8))
                 ctx.stroke(ridge, with: .color(.white.opacity(0.12 + 0.6 * nearness)), lineWidth: 1.5)
             }
             x += gap
         }
-        ctx.fill(Path(roundedRect: CGRect(x: mid - 1.5, y: 3, width: 3, height: size.height - 6), cornerRadius: 1.5),
-                 with: .color(.yellow))
+        ctx.fill(Path(CGRect(x: mid - 1.5, y: 0, width: 3, height: size.height)), with: .color(.yellow))
     }
 }
 
