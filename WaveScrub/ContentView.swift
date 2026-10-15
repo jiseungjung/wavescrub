@@ -246,9 +246,13 @@ struct ContentView: View {
                     .frame(height: Self.recentHeader, alignment: .bottom)
                 List {
                     ForEach(model.recents) { recent in
-                        videoRow(recent.title, icon: recent.kind == .photo ? "photo" : "doc", tint: .white) {
+                        // The open video stands out, and choosing it again
+                        // just closes the list.
+                        let isOpen = recent.videoKey == model.videoKey
+                        videoRow(recent.title, icon: recent.kind == .photo ? "photo" : "doc",
+                                 tint: isOpen ? .accentColor : .white, current: isOpen) {
                             showVideos = false
-                            model.openRecent(recent)
+                            if !isOpen { model.openRecent(recent) }
                         }
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
@@ -268,7 +272,8 @@ struct ContentView: View {
         }
     }
 
-    private func videoRow(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
+    private func videoRow(_ title: String, icon: String, tint: Color, current: Bool = false,
+                          action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
                 Image(systemName: icon)
@@ -276,9 +281,15 @@ struct ContentView: View {
                     .foregroundStyle(tint)
                     .frame(width: 24)
                 Text(title)
+                    .fontWeight(current ? .semibold : .regular)
                     .foregroundStyle(tint)
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if current {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
             }
             .padding(.horizontal, 16)
             .frame(height: Self.videoRowHeight)
