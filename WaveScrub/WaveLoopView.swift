@@ -431,7 +431,7 @@ final class LoopPlayer: ObservableObject {
         frames.reset(followed ? asset : nil, from: wanted.start.seconds, to: wanted.end.seconds)
         looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset), timeRange: wanted)
         player.defaultRate = rate
-        player.play()
+        if playing { player.play() }
     }
 
     /// The exact frame at the bookmark, or a little after, held still, to tap

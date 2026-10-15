@@ -505,8 +505,10 @@ final class CompareSession: ObservableObject {
 
     func tracksChanged() {
         // Unchanged loops carry on as they are.
+        // A paused clip stays paused, back at its start.
         for pane in panes where pane.clip?.video.key == model?.videoKey && pane.linkedRange == nil {
-            refresh(pane)
+            let playing = pane.loop.isPlaying
+            refresh(pane, at: playing ? nil : 0, playing: playing)
         }
     }
 
@@ -531,7 +533,8 @@ final class CompareSession: ObservableObject {
                 pane.clip = CompareClip(video: video, wave: choice.wave, track: saved[choice.wave.id])
                 pane.status = nil
                 pane.loop.rate = rate
-                refresh(pane)
+                // A new wave waits, paused on its first frame, for play.
+                refresh(pane, at: 0, playing: false)
                 if video.key == model.videoKey, model.tracks[choice.wave.id] == nil {
                     model.priorityWaveID = choice.wave.id
                 }
