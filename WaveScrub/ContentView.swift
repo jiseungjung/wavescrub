@@ -211,9 +211,10 @@ struct ContentView: View {
 
     private static let videoRowHeight: CGFloat = 50
     private static let visibleRecents = 5
+    private static let recentHeader: CGFloat = 22
 
     private var videosCardHeight: CGFloat {
-        let recents = model.recents.isEmpty ? 0 : 34 + CGFloat(min(model.recents.count, Self.visibleRecents)) * Self.videoRowHeight
+        let recents = model.recents.isEmpty ? 0 : Self.recentHeader + CGFloat(min(model.recents.count, Self.visibleRecents)) * Self.videoRowHeight
         return 2 * Self.videoRowHeight + 1 + recents + 6
     }
 
@@ -229,7 +230,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 18)
-                    .frame(height: 34, alignment: .bottom)
+                    .frame(height: Self.recentHeader, alignment: .bottom)
                 List {
                     ForEach(model.recents) { recent in
                         videoRow(recent.title, icon: recent.kind == .photo ? "photo" : "doc", tint: .white) {
