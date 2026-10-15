@@ -105,8 +105,10 @@ struct WaveLoopView: View {
         }
     }
 
-    /// The choices only show once there's something to choose between.
-    private var showsFilter: Bool { model.surfers.count > 1 || model.waves.contains(where: \.starred) }
+    /// The surfer choices only show once there's more than one surfer.
+    private var showsFilter: Bool { model.surfers.count > 1 }
+    /// The star toggle shows once something is starred.
+    private var showsStarToggle: Bool { starredOnly || model.waves.contains(where: \.starred) }
     private var track: WaveTrack? { waveID.flatMap { model.tracks[$0] } }
 
     // MARK: Pieces
@@ -215,27 +217,19 @@ struct WaveLoopView: View {
         }
     }
 
-    /// ★ | All · each surfer: go through only starred waves, only one
-    /// surfer's, or both.
+    /// All · each surfer: go through only one surfer's waves.
     private var surferFilter: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                filterChip("★", color: .yellow, selected: starredOnly) { starredOnly.toggle() }
-                if model.surfers.count > 1 {
-                    Rectangle().fill(.white.opacity(0.3)).frame(width: 1, height: 18)
-                        .padding(.horizontal, 2)
-                    filterChip("All", color: .white, selected: onlySurfer == nil) { onlySurfer = nil }
-                    ForEach(model.surfers) { surfer in
-                        filterChip(surfer.label, color: surfer.color.color, selected: onlySurfer == surfer.id) {
-                            onlySurfer = surfer.id
-                        }
+                filterChip("All", color: .white, selected: onlySurfer == nil) { onlySurfer = nil }
+                ForEach(model.surfers) { surfer in
+                    filterChip(surfer.label, color: surfer.color.color, selected: onlySurfer == surfer.id) {
+                        onlySurfer = surfer.id
                     }
                 }
             }
             .padding(.horizontal, 16)
         }
-        .onChange(of: onlySurfer) { keepPlace() }
-        .onChange(of: starredOnly) { keepPlace() }
     }
 
     /// Stay on the wave you're watching if it's in the new choice; otherwise
@@ -261,8 +255,28 @@ struct WaveLoopView: View {
         }
     }
 
-    /// Every wave by its name and its surfer's color, in time order.
+    /// Every wave by its name, in time order, with its surfer's color when
+    /// there's more than one surfer. The star toggle stays put at the start
+    /// while the waves scroll beside it.
     private var waveNames: some View {
+        HStack(spacing: 0) {
+            if showsStarToggle {
+                Button { starredOnly.toggle() } label: {
+                    Image(systemName: starredOnly ? "star.fill" : "star")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(starredOnly ? .black : .yellow)
+                        .frame(width: 38, height: 38)
+                        .background(starredOnly ? Color.yellow : Color.white.opacity(0.12), in: Circle())
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 2)
+            }
+            waveChips
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var waveChips: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -275,7 +289,9 @@ struct WaveLoopView: View {
                     ForEach(shownWaves) { w in
                         Button { waveID = w.id } label: {
                             HStack(spacing: 6) {
-                                Circle().fill(w.color.color).frame(width: 10, height: 10)
+                                if model.surfers.count > 1 {
+                                    Circle().fill(w.color.color).frame(width: 10, height: 10)
+                                }
                                 Text(w.title).font(.callout).lineLimit(1)
                             }
                             .foregroundStyle(.white)
@@ -289,7 +305,8 @@ struct WaveLoopView: View {
                         .id(w.id)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.leading, showsStarToggle ? 8 : 16)
+                .padding(.trailing, 16)
             }
             .onChange(of: waveID) {
                 withAnimation { proxy.scrollTo(waveID, anchor: .center) }
@@ -300,7 +317,8 @@ struct WaveLoopView: View {
             }
             .onAppear { proxy.scrollTo(waveID, anchor: .center) }
         }
-        .padding(.bottom, 8)
+        .onChange(of: onlySurfer) { keepPlace() }
+        .onChange(of: starredOnly) { keepPlace() }
     }
 
     // MARK: Actions
