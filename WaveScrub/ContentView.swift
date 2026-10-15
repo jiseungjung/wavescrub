@@ -45,6 +45,7 @@ struct ContentView: View {
             .statusBarHidden(landscape)
             .persistentSystemOverlays(landscape ? .hidden : .automatic)
         }
+        .overlayPreferenceValue(VideosButtonAnchor.self) { videosCard($0) }
         .sheet(isPresented: $showPhotos) {
             PhotoVideoPicker { id in
                 showPhotos = false
@@ -171,62 +172,113 @@ struct ContentView: View {
 
     // MARK: Pieces
 
-    /// Opening a video: from Photos, from Files, or one opened before. Tap a
-    /// recent video to open it; slide it left to remove it from the list.
+    /// Opening a video: from Photos, from Files, or one opened before. Opens
+    /// a card under the button (or above it, at the bottom of the screen).
     private var openMenu: some View {
-        Button { showVideos = true } label: {
+        Button {
+            withAnimation(.spring(duration: 0.25)) { showVideos.toggle() }
+        } label: {
             Image(systemName: "film.stack").font(.title3)
         }
-        .popover(isPresented: $showVideos) {
-            VStack(spacing: 0) {
-                // Always there; only the recent videos below scroll.
-                videoSourceRow("From Photos", icon: "photo.on.rectangle") { afterClosingVideos { openPhotos() } }
-                Divider().padding(.leading, 52)
-                videoSourceRow("From Files", icon: "folder") { afterClosingVideos { showFiles = true } }
-                if !model.recents.isEmpty {
-                    Text("RECENT")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
-                        .padding(.bottom, 4)
-                    List {
-                        ForEach(model.recents) { recent in
-                            Button {
-                                showVideos = false
-                                model.openRecent(recent)
-                            } label: {
-                                Label(recent.title, systemImage: recent.kind == .photo ? "photo" : "doc")
-                            }
-                        }
-                        .onDelete { offsets in
-                            for i in offsets { model.removeRecent(model.recents[i].id) }
-                        }
-                    }
-                    .listStyle(.plain)
-                    .frame(height: CGFloat(min(model.recents.count, 5)) * 48)
+        .anchorPreference(key: VideosButtonAnchor.self, value: .bounds) { $0 }
+    }
+
+    /// The card, laid over everything, lined up with the videos button. A tap
+    /// anywhere else closes it.
+    private func videosCard(_ anchor: Anchor<CGRect>?) -> some View {
+        GeometryReader { geo in
+            if showVideos, let anchor {
+                let button = geo[anchor]
+                let width = min(320, geo.size.width - 24)
+                let height = videosCardHeight
+                let below = button.maxY + 8 + height <= geo.size.height
+                let x = min(max(12, button.minX - 6), geo.size.width - width - 12)
+                let y = below ? button.maxY + 8 : button.minY - 8 - height
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showVideos = false } }
+                    videosList
+                        .frame(width: width, height: height)
+                        .background(Color(white: 0.13), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(.white.opacity(0.08)))
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+                        .offset(x: x, y: y)
+                        .transition(.scale(scale: 0.92, anchor: below ? .topLeading : .bottomLeading)
+                            .combined(with: .opacity))
                 }
             }
-            .frame(width: 300)
-            .presentationCompactAdaptation(.popover)
         }
     }
 
-    private func videoSourceRow(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private static let videoRowHeight: CGFloat = 50
+    private static let visibleRecents = 5
+
+    private var videosCardHeight: CGFloat {
+        let recents = model.recents.isEmpty ? 0 : 34 + CGFloat(min(model.recents.count, Self.visibleRecents)) * Self.videoRowHeight
+        return 2 * Self.videoRowHeight + 1 + recents + 6
+    }
+
+    private var videosList: some View {
+        VStack(spacing: 0) {
+            // Always there; only the recent videos below scroll.
+            videoRow("From Photos", icon: "photo.on.rectangle", tint: .accentColor) { afterClosingVideos { openPhotos() } }
+            Divider().padding(.leading, 52)
+            videoRow("From Files", icon: "folder", tint: .accentColor) { afterClosingVideos { showFiles = true } }
+            if !model.recents.isEmpty {
+                Text("Recent")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .frame(height: 34, alignment: .bottom)
+                List {
+                    ForEach(model.recents) { recent in
+                        videoRow(recent.title, icon: recent.kind == .photo ? "photo" : "doc", tint: .white) {
+                            showVideos = false
+                            model.openRecent(recent)
+                        }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparatorTint(.white.opacity(0.12))
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 52 }
+                    }
+                    .onDelete { offsets in
+                        for i in offsets { model.removeRecent(model.recents[i].id) }
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .environment(\.defaultMinListRowHeight, Self.videoRowHeight)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func videoRow(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: icon)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 13)
-                .contentShape(Rectangle())
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                    .foregroundStyle(tint)
+                    .frame(width: 24)
+                Text(title)
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .frame(height: Self.videoRowHeight)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
-    /// The list has to be gone before the Photos or Files picker can show.
-    private func afterClosingVideos(_ then: @escaping () -> Void) {
+    private func afterClosingVideos(_ then: () -> Void) {
         showVideos = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: then)
+        then()
     }
 
     /// Opens the screen that loops each marked wave, following the surfer.
@@ -258,6 +310,8 @@ struct ContentView: View {
             // Off a wave, marks one here: with the flag when it's only you, or
             // with the button of whoever is riding. On a wave, deletes it.
             if let wave = selectedWave {
+                // Here, not beside the name, so it doesn't move as the name changes.
+                StarButton(wave: wave)
                 Button { model.deleteWave(wave.id) } label: {
                     Image(systemName: "trash").font(.title3)
                 }
@@ -290,10 +344,7 @@ struct ContentView: View {
     /// The wave you're on, beside the time. Empty between waves, so nothing
     /// else moves.
     @ViewBuilder private var waveTag: some View {
-        if let wave = selectedWave {
-            WaveTag(wave: wave)
-            StarButton(wave: wave)
-        }
+        if let wave = selectedWave { WaveTag(wave: wave) }
     }
 
     /// Full library access is what lets the app read the original file in
@@ -390,5 +441,13 @@ struct StarButton: View {
                 .font(.title3)
                 .foregroundStyle(wave.starred ? .yellow : .white.opacity(0.7))
         }
+    }
+}
+
+/// Where the videos button is, so its card can line up with it.
+private struct VideosButtonAnchor: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>?
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
     }
 }
