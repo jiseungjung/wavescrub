@@ -110,7 +110,6 @@ struct ComparePaneView: View {
                         zoom: pane.zoom,
                         onSwipe: { _ in },
                         onZoom: { session.zoom(pane, to: $0) },
-                        clipID: clip.wave.id,
                         comparing: true
                     )
                 }
@@ -512,9 +511,11 @@ final class CompareSession: ObservableObject {
                     video = OpenedVideo(asset: asset, info: model.videoInfo, key: key)
                 }
                 let saved = video.key == model.videoKey ? [:] : PlayerModel.loadTracks(key: video.key)
+                // Another wave in a clip keeps its zoom; only an empty one
+                // starts at the loop screen's.
+                if pane.clip == nil { pane.zoom = startZoom }
                 pane.clip = CompareClip(video: video, wave: choice.wave, track: saved[choice.wave.id])
                 pane.status = nil
-                pane.zoom = startZoom
                 pane.loop.rate = rate
                 refresh(pane)
                 if video.key == model.videoKey, model.tracks[choice.wave.id] == nil {

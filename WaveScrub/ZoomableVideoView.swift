@@ -59,14 +59,14 @@ final class ZoomingPlayerView: UIScrollView, UIScrollViewDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Rotating the phone starts that view unzoomed. Any other resize (the
-        // wave editor appearing under the video) keeps the zoom and the spot
-        // you were looking at. A nudge of a point or two (the controls around
-        // it re-laying out while playing) leaves everything exactly where it is.
+        // A resize (the keyboard coming up to name a wave squashes the video)
+        // keeps the zoom and the spot you were looking at, even when it
+        // leaves the view wider than tall: turning the phone is a different
+        // view altogether. A nudge of a point or two (the controls around it
+        // re-laying out while playing) leaves everything exactly where it is.
         let size = bounds.size
         if abs(size.width - laidOutFor.width) > 40 || abs(size.height - laidOutFor.height) > 40 {
-            let rotated = (size.width > size.height) != (laidOutFor.width > laidOutFor.height)
-            relayout(keepZoom: !rotated)
+            relayout(keepZoom: true)
         } else if size != laidOutFor {
             laidOutFor = size
             centerContent()

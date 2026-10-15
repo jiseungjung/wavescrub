@@ -480,8 +480,6 @@ struct FollowingVideoView: UIViewRepresentable {
     var onTap: ((CGPoint) -> Void)?
     var onSwipe: (Int) -> Void
     var onZoom: (Double) -> Void
-    /// The wave shown, when comparing: a new one starts centred and unzoomed.
-    var clipID: UUID? = nil
     /// One of two clips being compared: drag to look around, double-tap to
     /// centre, no swiping to another wave.
     var comparing = false
@@ -499,7 +497,6 @@ struct FollowingVideoView: UIViewRepresentable {
         view.onTap = onTap
         view.onSwipe = onSwipe
         view.onZoom = onZoom
-        view.clipID = clipID
     }
 }
 
@@ -523,9 +520,6 @@ final class FollowingPlayerView: UIView {
     var onTap: ((CGPoint) -> Void)?
     var onSwipe: (Int) -> Void = { _ in }
     var onZoom: (Double) -> Void = { _ in }
-    var clipID: UUID? {
-        didSet { if clipID != oldValue { recenter() } }
-    }
     private let comparing: Bool
     /// Where the view has been dragged to while following, as a share of what's
     /// shown: the surfer stays put that far from the middle.
