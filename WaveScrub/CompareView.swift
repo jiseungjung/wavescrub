@@ -13,6 +13,7 @@ struct CompareView: View {
     /// The wave the loop screen was on; it goes in the first clip.
     let first: Wave
     @State private var choosingFor: ComparePane?
+    /// How many seconds one swipe across a jog strip moves.
     @AppStorage("compareTapeSpan") private var tapeSpan: Double = 4
     @AppStorage("loopZoom") private var loopZoom: Double = 1
 
@@ -24,14 +25,32 @@ struct CompareView: View {
             // The videos fill the screen; the buttons float over the top of it.
             ZStack(alignment: .top) {
                 layout {
-                    ForEach(session.panes) { pane in
-                        ComparePaneView(session: session, pane: pane, tapeSpan: $tapeSpan, compact: landscape) {
+                    ForEach(Array(session.panes.enumerated()), id: \.element.id) { index, pane in
+                        // Linked, the shared strip sits over the bottom of the
+                        // screen; the clips along it leave room for it.
+                        let alongBottom = landscape || index == session.panes.count - 1
+                        ComparePaneView(session: session, pane: pane, tapeSpan: $tapeSpan, compact: landscape,
+                                        reserveBottom: session.linked && alongBottom ? Self.stripHeight + 12 : 0) {
                             choosingFor = pane
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
                 .ignoresSafeArea(edges: .top)
+                .overlay(alignment: .bottom) {
+                    // Linked: one strip moves both clips together.
+                    if session.linked, let lead = session.panes.first {
+                        JogStrip(clock: lead.loop.clock, span: $tapeSpan,
+                                 onBegin: { session.beginSlide(lead) },
+                                 onSlide: { session.slide(lead, to: $0) },
+                                 onEnd: { session.endSlide(lead) })
+                            .frame(height: Self.stripHeight)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 8)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: session.linked)
                 topBar(landscape: landscape)
                     .background(
                         LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
@@ -57,6 +76,8 @@ struct CompareView: View {
             session.keepInStep()
         }
     }
+
+    static let stripHeight: CGFloat = 30
 
     private func topBar(landscape: Bool) -> some View {
         HStack(spacing: 22) {
@@ -94,14 +115,17 @@ struct CompareView: View {
 }
 
 /// One of the two clips: the video as large as it can be, with its wave's
-/// name (tap to choose another) and the tape to slide through it laid over
-/// the bottom of the picture.
+/// name (tap to choose another) and a jog strip to roll through it laid over
+/// the bottom of the picture, and a thin line along the bottom edge for
+/// where it is in the clip. Linked, the clip's own strip gives way to the
+/// shared one.
 struct ComparePaneView: View {
     @EnvironmentObject private var model: PlayerModel
     @ObservedObject var session: CompareSession
     @ObservedObject var pane: ComparePane
     @Binding var tapeSpan: Double
     let compact: Bool
+    var reserveBottom: CGFloat = 0
     let onChoose: () -> Void
 
     var body: some View {
@@ -136,24 +160,22 @@ struct ComparePaneView: View {
             if pane.clip != nil {
                 VStack(spacing: 6) {
                     header
-                    if let clip = pane.clip {
-                        HStack(spacing: 10) {
-                            PanePlayButton(clock: pane.loop.clock) { session.playPause(pane) }
-                            LoopTape(clock: pane.loop.clock, frameRate: clip.video.info.frameRate, span: $tapeSpan,
-                                     onBegin: { session.beginSlide(pane) },
-                                     onSlide: { session.slide(pane, to: $0) },
-                                     onEnd: { session.endSlide(pane) })
-                        }
-                        .frame(height: compact ? 34 : 42)
-                        .padding(.horizontal, 12)
+                    if !session.linked {
+                        JogStrip(clock: pane.loop.clock, span: $tapeSpan,
+                                 onBegin: { session.beginSlide(pane) },
+                                 onSlide: { session.slide(pane, to: $0) },
+                                 onEnd: { session.endSlide(pane) })
+                            .frame(height: CompareView.stripHeight)
+                            .padding(.horizontal, 12)
                     }
                 }
                 .padding(.top, 24)
-                .padding(.bottom, 8)
+                .padding(.bottom, 8 + reserveBottom)
                 .background(
-                    LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                    LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom)
                         .allowsHitTesting(false)
                 )
+                ClipProgress(clock: pane.loop.clock)
             }
         }
         .clipped()
@@ -206,25 +228,27 @@ struct NotFollowedTag: View {
     }
 }
 
-private struct PanePlayButton: View {
+/// A thin line along the clip's bottom edge: how far through the clip it is.
+private struct ClipProgress: View {
     @ObservedObject var clock: LoopClock
-    let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: clock.playing ? "pause.fill" : "play.fill")
-                .frame(width: 20)
+        GeometryReader { geo in
+            let length = max(clock.end - clock.start, 0.1)
+            let fraction = min(max((clock.time - clock.start) / length, 0), 1)
+            Rectangle().fill(Color.yellow)
+                .frame(width: geo.size.width * fraction, height: 2)
+                .frame(maxHeight: .infinity, alignment: .bottom)
         }
-        .foregroundStyle(.white)
+        .allowsHitTesting(false)
     }
 }
 
-/// A tape through one loop, like the main screen's: the moment shown sits
-/// under the yellow line, and dragging the tape slides through the loop.
-/// Pinch it to fit more or less of the loop across.
-struct LoopTape: View {
+/// A jog strip, like a wheel seen edge-on: ridges that roll under your thumb.
+/// Drag slowly to step frame by frame, faster to move further; one swipe
+/// across moves `span` seconds. Pinch it for finer or coarser steps.
+struct JogStrip: View {
     @ObservedObject var clock: LoopClock
-    let frameRate: Double
     @Binding var span: Double
     var onBegin: () -> Void
     var onSlide: (Double) -> Void
@@ -232,9 +256,12 @@ struct LoopTape: View {
     @State private var dragStart: Double?
     @State private var pinchStart: Double?
 
+    private static let ridgeGap: CGFloat = 7
+
     var body: some View {
         GeometryReader { geo in
             Canvas { ctx, size in draw(ctx, size: size) }
+                .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
@@ -266,55 +293,27 @@ struct LoopTape: View {
         }
     }
 
-    /// Ticks are labelled from the start of the loop.
+    /// The ridges move with the clip's time, brightest in the middle and
+    /// fading toward the ends, like the face of a wheel.
     private func draw(_ ctx: GraphicsContext, size: CGSize) {
-        let start = clock.start, end = max(clock.end, clock.start + 0.1)
         guard size.width > 0 else { return }
+        let gap = Self.ridgeGap
         let pxPerSec = Double(size.width) / span
-        let t0 = clock.time - span / 2
-        let t1 = t0 + span
-        func x(_ t: Double) -> CGFloat { CGFloat((t - t0) * pxPerSec) }
-
-        // The tape is only as long as the clip: past either end there's
-        // nothing over the picture.
-        let left = max(x(start), 0), right = min(x(end), size.width)
-        if right > left {
-            ctx.fill(Path(roundedRect: CGRect(x: left, y: 0, width: right - left, height: size.height),
-                          cornerRadius: 6),
-                     with: .color(.black.opacity(0.35)))
-        }
-
-        let major = FineTape.majorInterval(pxPerSec: pxPerSec)
-        let frame = 1 / max(1, frameRate)
-        let minor = frame * pxPerSec >= 5 ? frame : major / 5
-        let first = max(t0, start) - start, last = min(t1, end) - start
-
-        var minorPath = Path()
-        var r = (first / minor).rounded(.up) * minor
-        while r <= last {
-            let px = x(start + r)
-            minorPath.move(to: CGPoint(x: px, y: size.height * 0.62))
-            minorPath.addLine(to: CGPoint(x: px, y: size.height))
-            r += minor
-        }
-        ctx.stroke(minorPath, with: .color(.white.opacity(0.35)), lineWidth: 1)
-
-        var majorPath = Path()
-        r = (first / major).rounded(.up) * major
-        while r <= last {
-            let px = x(start + r)
-            majorPath.move(to: CGPoint(x: px, y: size.height * 0.42))
-            majorPath.addLine(to: CGPoint(x: px, y: size.height))
-            ctx.draw(Text(String(format: major < 1 ? "%.1fs" : "%.0fs", r))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7)),
-                     at: CGPoint(x: px, y: size.height * 0.26))
-            r += major
-        }
-        ctx.stroke(majorPath, with: .color(.white.opacity(0.8)), lineWidth: 1.5)
-
+        let shift = CGFloat((clock.time * pxPerSec).truncatingRemainder(dividingBy: Double(gap)))
         let mid = size.width / 2
-        ctx.fill(Path(CGRect(x: mid - 1.5, y: 0, width: 3, height: size.height)), with: .color(.yellow))
+        var x = -shift
+        while x < size.width + gap {
+            if x >= 0 {
+                let nearness = 1 - min(abs(x - mid) / mid, 1)
+                var ridge = Path()
+                ridge.move(to: CGPoint(x: x, y: size.height * 0.25))
+                ridge.addLine(to: CGPoint(x: x, y: size.height * 0.75))
+                ctx.stroke(ridge, with: .color(.white.opacity(0.12 + 0.6 * nearness)), lineWidth: 1.5)
+            }
+            x += gap
+        }
+        ctx.fill(Path(roundedRect: CGRect(x: mid - 1.5, y: 3, width: 3, height: size.height - 6), cornerRadius: 1.5),
+                 with: .color(.yellow))
     }
 }
 
@@ -571,12 +570,6 @@ final class CompareSession: ObservableObject {
             lineUp()
             for pane in panes where pane.clip != nil { pane.loop.play() }
         }
-    }
-
-    /// Linked, both play and pause together.
-    func playPause(_ pane: ComparePane) {
-        if linked { return playPauseAll() }
-        pane.loop.isPlaying ? pane.loop.pause() : pane.loop.play()
     }
 
     /// Where the other clip should be, linked, when this one is at `time`.
