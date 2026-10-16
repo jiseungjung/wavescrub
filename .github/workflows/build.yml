@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The newest Xcode on the runner: Liquid Glass needs the iOS 26 SDK.
+      - name: Pick Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          xcodebuild -version
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen
