@@ -81,6 +81,9 @@ enum WaveTracker {
     /// Less than this share of the picture's width, leftwards, over the window
     /// is a stop. The slowest stretch of a real ride measured about 3%.
     static let stallDistance = 0.015
+    /// Once a clip is stretched past the ride: how far back right the path
+    /// may head before it's taken as the surfer done riding.
+    static let turnBack = 0.02
     /// How tall a surfer is, as a share of the picture's height, in the clips
     /// measured. Sizes the box the tracker starts from.
     static let riderHeight = 0.042
@@ -306,12 +309,18 @@ enum WaveTracker {
     }
 
     /// The clip was made to end later than the path does: follows the surfer on
-    /// from the end of it, staying where they were last seen if they're lost.
+    /// from the end of it, but only while they're surely still in sight and
+    /// riding. The moment the tracker is unsure, or they stop going left, the
+    /// path stops and the view stays where they were last seen to the end.
+    /// Nothing else is picked up instead: after a ride there's mostly foam and
+    /// other people, and the view would wander off after them.
     static func extendForward(_ track: WaveTrack, asset: AVAsset, to end: Double) async throws -> WaveTrack {
         let frames = try await Frames(asset: asset)
         let fps = Double(Frames.rate)
         let last = track.start + Double(track.xs.count - 1) * track.step
         guard end > last + track.step / 2, !track.xs.isEmpty else { return track }
+        var held = track
+        held.end = max(track.end, end)
         var follower = Follower(seed: riderBox(at: track.center(at: last), picture: frames.picture),
                                 picture: frames.picture, orientation: .up)
         // The last second of the path, so their speed says where to look.
@@ -321,6 +330,8 @@ enum WaveTracker {
             follower.ys.append(Double(track.ys[i]))
         }
         let known = follower.times.count
+        // How many of the new positions to keep.
+        var keep = 0
         let (reader, output) = try frames.reader(from: last, seconds: end - last + 0.5 / fps)
         defer { reader.cancelReading() }
         while let sample = output.copyNextSampleBuffer() {
@@ -328,17 +339,24 @@ enum WaveTracker {
             let t = sample.presentationTimeStamp.seconds
             guard t > last + 0.5 / fps, t <= end + 0.5 / fps,
                   let buffer = sample.imageBuffer, let luma = Luma(buffer) else { continue }
-            guard let step = try follower.follow(buffer, luma: luma, at: t) else { break }
+            guard let step = try follower.follow(buffer, luma: luma, at: t), step.note == "ok" else { break }
             var box = step.box
-            if let since = follower.lostSince, t - since >= lostFor, let x = follower.xs.last, let y = follower.ys.last {
-                box = riderBox(at: CGPoint(x: x, y: y), picture: frames.picture)
-            }
             box.origin.x = min(max(box.origin.x, -box.width / 2), 1 - box.width / 2)
             box.origin.y = min(max(box.origin.y, -box.height / 2), 1 - box.height / 2)
             follower.record(box, at: t)
+            keep = follower.xs.count - known
+            // Riders go left. Heading back right, they've kicked out or it's
+            // someone else: stop where they were furthest along.
+            let new = follower.xs[known...]
+            if let furthest = new.indices.min(by: { follower.xs[$0] < follower.xs[$1] }),
+               follower.xs[follower.xs.count - 1] - follower.xs[furthest] > turnBack {
+                keep = furthest - known + 1
+                break
+            }
+            if box.midX < 0.015 { break }
         }
-        let xs = Array(follower.xs[known...]), ys = Array(follower.ys[known...])
-        guard !xs.isEmpty else { return track }
+        let xs = Array(follower.xs[known..<(known + keep)]), ys = Array(follower.ys[known..<(known + keep)])
+        guard !xs.isEmpty else { return held }
         // Smoothed as the rest of the path was, and joined onto it without a
         // jump: the gap where they meet is spread over the stretch added.
         let n = xs.count, half = max(1, Int(fps / 2))
@@ -351,7 +369,7 @@ enum WaveTracker {
         var longer = track
         longer.xs += (0..<n).map { Float(smooth(xs, $0) + gapX * Double(n - $0) / Double(n + 1)) }
         longer.ys += (0..<n).map { Float(smooth(ys, $0) + gapY * Double(n - $0) / Double(n + 1)) }
-        longer.end = max(track.end, end)
+        longer.end = held.end
         return longer
     }
 
