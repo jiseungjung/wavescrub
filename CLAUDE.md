@@ -96,7 +96,8 @@ to be renamed and recolored by hand. That gets tedious fast.
   out.
 - The loop screen has a filter row: a star toggle, then All / each surfer.
   The star combines with the surfer choice. Switching keeps your place:
-  the wave you're watching if it fits, else the last one watched there.
+  the wave you're watching if it fits, else the last one watched that fits
+  (watched under any choice), else the choice's first wave.
 
 ### Not doing for now
 - Sets as their own thing. If wanted later, group waves into sets

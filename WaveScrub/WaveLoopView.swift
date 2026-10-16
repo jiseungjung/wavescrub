@@ -136,7 +136,7 @@ struct WaveLoopView: View {
             trimming = false
             picking = waveID.map { model.unfoundWaveIDs.contains($0) } ?? false
             pickTime = wave?.time ?? 0
-            if let waveID { lastWave[choice] = waveID }
+            if let wave { remember(wave) }
             model.priorityWaveID = waveID
             refresh()
         }
@@ -426,15 +426,25 @@ struct WaveLoopView: View {
         }
     }
 
+    /// A wave watched counts as the last one for every choice it fits, not
+    /// just the one it was watched in: watching A's fifth wave under All
+    /// brings you back to it when choosing A.
+    private func remember(_ wave: Wave) {
+        var fits = ["all"]
+        if let surfer = wave.surferID { fits.append(surfer.uuidString) }
+        if wave.starred { fits += fits.map { $0 + "★" } }
+        for key in fits { lastWave[key] = wave.id }
+    }
+
     /// Stay on the wave you're watching if it's in the new choice; otherwise
-    /// go back to the one you last watched there, or the nearest before.
+    /// go back to the one you last watched there, or its first wave.
     private func keepPlace() {
         let shown = shownWaves
         guard !shown.contains(where: { $0.id == waveID }) else { return }
         if let last = lastWave[choice], shown.contains(where: { $0.id == last }) {
             waveID = last
         } else {
-            waveID = shown.last(where: { $0.time <= (wave?.time ?? 0) })?.id ?? shown.first?.id
+            waveID = shown.first?.id
         }
     }
 
