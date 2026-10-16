@@ -19,11 +19,21 @@ struct Wave: Codable, Identifiable, Equatable {
     /// A name typed for this one wave, in place of the surfer's count.
     var customName: String?
     var starred = false
+    /// Where the clip starts and ends, when moved by hand; otherwise where the
+    /// tracker found the ride starts and ends.
+    var clipStart: Double?
+    var clipEnd: Double?
 
-    enum CodingKeys: String, CodingKey { case id, name, time, color, surferID, customName, starred }
+    enum CodingKeys: String, CodingKey { case id, name, time, color, surferID, customName, starred, clipStart, clipEnd }
 
     /// The name as shown, with a star in front of a starred wave.
     var title: String { starred ? "★ " + name : name }
+
+    /// What plays of this wave, once its surfer is followed.
+    func clip(_ track: WaveTrack) -> ClosedRange<Double> {
+        let start = clipStart ?? track.start
+        return start...max(clipEnd ?? track.end, start + 0.5)
+    }
 
     init(id: UUID = UUID(), name: String, time: Double, color: WaveColor = .cyan,
          surferID: Surfer.ID? = nil, customName: String? = nil) {
@@ -44,6 +54,8 @@ struct Wave: Codable, Identifiable, Equatable {
         surferID = try c.decodeIfPresent(UUID.self, forKey: .surferID)
         customName = try c.decodeIfPresent(String.self, forKey: .customName)
         starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
+        clipStart = try c.decodeIfPresent(Double.self, forKey: .clipStart)
+        clipEnd = try c.decodeIfPresent(Double.self, forKey: .clipEnd)
     }
 }
 
@@ -501,6 +513,22 @@ final class PlayerModel: ObservableObject {
         saveWaves()
     }
 
+    /// Where the wave's clip starts and ends, moved by hand. Past what the
+    /// tracker followed, the surfer is followed on into the new part.
+    func setClip(_ id: Wave.ID, start: Double, end: Double) {
+        guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
+        waves[i].clipStart = start
+        waves[i].clipEnd = end
+        saveWaves()
+        unextendableWaveIDs.remove(id)
+        // Whatever is being worked out now starts again later; this comes first.
+        if trackingTask != nil, tracks[id] != nil { stopTracking() }
+        trackPending()
+    }
+
+    /// Whether the surfer is being followed into a part of this wave added by hand.
+    func isExtending(_ id: Wave.ID) -> Bool { trackingWaveID == id && tracks[id] != nil }
+
     func toggleStar(_ id: Wave.ID) {
         guard let i = waves.firstIndex(where: { $0.id == id }) else { return }
         waves[i].starred.toggle()
@@ -625,26 +653,35 @@ final class PlayerModel: ObservableObject {
             startTracking(wave, tap: nil, asset: asset, key: videoKey)
             return
         }
-        // Then paths saved before surfers were followed backwards, which start a
-        // moment after their bookmark.
-        let late = waves.filter { wave in
-            tracks[wave.id].map { $0.start > wave.time + 0.05 } == true && !unextendableWaveIDs.contains(wave.id)
+        // Then paths that don't reach the whole clip: the clip was moved by
+        // hand past them, or they were saved before surfers were followed
+        // backwards and start a moment after their bookmark.
+        let short = waves.filter { wave in
+            guard let track = tracks[wave.id], !unextendableWaveIDs.contains(wave.id) else { return false }
+            return track.start > (wave.clipStart ?? wave.time) + 0.05 || track.end < (wave.clipEnd ?? 0) - 0.05
         }
-        if let wave = late.first(where: { $0.id == priorityWaveID }) ?? late.first, let track = tracks[wave.id] {
-            extendBack(wave, track: track, asset: asset)
+        if let wave = short.first(where: { $0.id == priorityWaveID }) ?? short.first, let track = tracks[wave.id] {
+            extend(wave, track: track, asset: asset)
         }
     }
 
-    /// Waves whose path couldn't be followed back to the bookmark; not tried
-    /// again until the video is opened again.
+    /// Waves whose path couldn't be followed into the rest of the clip; not
+    /// tried again until the video is opened again or the clip is moved.
     private var unextendableWaveIDs: Set<Wave.ID> = []
 
-    private func extendBack(_ wave: Wave, track: WaveTrack, asset: AVAsset) {
+    private func extend(_ wave: Wave, track: WaveTrack, asset: AVAsset) {
         let run = UUID()
         trackingRun = run
         trackingWaveID = wave.id
+        let start = wave.clipStart ?? wave.time, end = wave.clipEnd
         trackingTask = Task.detached(priority: .utility) { [weak self] in
-            let longer = try? await WaveTracker.extendBack(track, asset: asset, to: wave.time)
+            var longer = track
+            if track.start > start + 0.05, let back = try? await WaveTracker.extendBack(longer, asset: asset, to: start) {
+                longer = back
+            }
+            if let end, track.end < end - 0.05, let on = try? await WaveTracker.extendForward(longer, asset: asset, to: end) {
+                longer = on
+            }
             await self?.finishExtending(wave.id, run: run, from: track, to: longer)
         }
     }
@@ -654,7 +691,7 @@ final class PlayerModel: ObservableObject {
         trackingTask = nil
         trackingWaveID = nil
         // Only if the path wasn't replaced (by a tap) in the meantime.
-        if let longer, tracks[id] == old, longer.start < old.start {
+        if let longer, tracks[id] == old, longer.start < old.start || longer.end > old.end {
             tracks[id] = longer
             saveTracks()
         } else {

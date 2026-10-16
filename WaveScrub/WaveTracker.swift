@@ -24,16 +24,23 @@ struct WaveTrack: Codable, Equatable {
     }
 }
 
-/// Follows one surfer from a wave's bookmark to the end of their ride, on the
-/// phone, with Apple's own tracker. Nothing leaves the device.
+/// Follows one surfer through their whole ride, on the phone, with Apple's own
+/// tracker. Nothing leaves the device.
 ///
-/// At the bookmark the surfer is at the far right edge, about to take off.
-/// Apple's person finder can't see anyone that small in a whole 4K frame, so
-/// they are found the plain way: of the dark, moving shapes in the right fifth of the
-/// picture, the one that travels furthest left over the next second and a
-/// half while staying dark. That passes over paddlers waiting at the edge
-/// (they barely move), the rider on the wave before (further left, slower)
-/// and ripples near the camera (the tracker slides onto blue water).
+/// A bookmark can be anywhere in the ride, at the takeoff or later. Riders
+/// go right to left, so the surfer on the newest wave is the furthest right
+/// one riding: anyone further left is still on an earlier wave. Apple's
+/// person finder can't see anyone that small in a whole 4K frame, so they
+/// are found the plain way: of the dark, moving shapes in the picture, the
+/// furthest right one that travels left over the next second and a half
+/// while staying dark. That passes over paddlers waiting at the edge (they
+/// barely move) and ripples near the camera (the tracker slides onto blue
+/// water).
+///
+/// From there they are followed backwards to the start of the ride, and
+/// forwards to its end. Going back, the ride starts at the first of: they
+/// reach the right edge, they can't be picked back up for half a second, or
+/// they were barely moving (waiting or paddling in).
 ///
 /// The tracker loses the surfer when someone crosses them: it slides onto the
 /// other person and then freezes. So whenever it loses the surfer, freezes, or
@@ -80,10 +87,12 @@ enum WaveTracker {
     /// Seconds of video read at a time when following the surfer backwards. Each
     /// piece is held whole, so this keeps memory to a few dozen megabytes.
     static let backPiece = 0.5
+    /// Going back, past this far right they're at the edge: the ride starts there.
+    static let rightEdge = 0.985
 
     // Finding the surfer at the bookmark.
-    /// Only shapes this far right are candidates.
-    static let rightEdge = 0.8
+    /// How many of the furthest right moving shapes are watched.
+    static let candidateCount = 12
     /// Brightness (0–255) below which a pixel is wetsuit, not water or foam.
     static let darkLuma: UInt8 = 60
     /// How much brighter or darker a pixel must get to count as moving.
@@ -98,9 +107,8 @@ enum WaveTracker {
     static let stillDark = 0.10
 
     /// `tap`, when given, is where the surfer was tapped and on which frame:
-    /// the bookmark's, or a later one where they were easier to see. From a
-    /// later frame they are also followed backwards to the bookmark, so the
-    /// loop still starts there.
+    /// the bookmark's, or a later one where they were easier to see. Either
+    /// way they are followed backwards from there to the start of the ride.
     ///
     /// `log`, when given, receives one line per frame and the reason the ride
     /// ended. Only the Mac test run uses it.
@@ -128,10 +136,7 @@ enum WaveTracker {
         log?(String(format: "seed,%.3f,%.4f,%.4f", seedTime, seed.midX, seed.midY))
         try Task.checkCancellation()
 
-        var follower = Follower(seed: seed, picture: picture, orientation: orientation)
-        if seedTime > start + 0.5 / fps {
-            follower = try followBack(frames, from: seedTime, to: start, seed: seed, log: log)
-        }
+        var follower = try followBack(frames, from: seedTime, to: start, seed: seed, searching: true, log: log)
 
         let (reader, output) = try frames.reader(from: seedTime, seconds: longestRide)
         defer { reader.cancelReading() }
@@ -200,7 +205,7 @@ enum WaveTracker {
         let fps = Double(Frames.rate)
         guard track.start > start + 0.5 / fps, !track.xs.isEmpty else { return track }
         let seed = riderBox(at: track.center(at: track.start), picture: frames.picture)
-        let back = try followBack(frames, from: track.start, to: start, seed: seed, log: nil)
+        let back = try followBack(frames, from: track.start, to: start, seed: seed, searching: false, log: nil)
         guard !back.times.isEmpty else { return track }
         // Smoothed as the rest of the path was, and joined onto it without a
         // jump: the gap where they meet is spread over the stretch added.
@@ -220,17 +225,24 @@ enum WaveTracker {
         return longer
     }
 
-    /// Follows the surfer from where they were tapped back to the bookmark, and hands
+    /// Follows the surfer from where they were found back to the bookmark, and hands
     /// over that stretch, in time order, to carry on forwards from. Video can
     /// only be read forwards, so it is read a short piece at a time, from the
     /// last piece to the first, and each piece played backwards.
+    ///
+    /// `searching`, they are followed on past the bookmark to the start of the
+    /// ride; otherwise exactly to `start`, staying where they were last seen if
+    /// they're lost on the way.
     private static func followBack(_ frames: Frames, from seedTime: Double, to start: Double, seed: CGRect,
-                                   log: ((String) -> Void)?) throws -> Follower {
+                                   searching: Bool, log: ((String) -> Void)?) throws -> Follower {
         let fps = Double(Frames.rate)
         var follower = Follower(seed: seed, picture: frames.picture, orientation: .up)
         var pieceEnd = seedTime
-        reading: while pieceEnd > start + 0.5 / fps {
-            let pieceStart = max(start, pieceEnd - backPiece)
+        let lowest = searching ? max(0, min(start, seedTime - longestRide)) : start
+        // Where the ride was found to start, once it has been.
+        var begin: Double?
+        reading: while pieceEnd > lowest + 0.5 / fps {
+            let pieceStart = max(lowest, pieceEnd - backPiece)
             let (reader, output) = try frames.reader(from: pieceStart, seconds: pieceEnd - pieceStart, copies: true)
             var piece: [(Double, CVPixelBuffer)] = []
             while let sample = output.copyNextSampleBuffer() {
@@ -244,6 +256,12 @@ enum WaveTracker {
                 guard let luma = Luma(buffer), let step = try follower.follow(buffer, luma: luma, at: t) else {
                     break reading
                 }
+                // Past the bookmark, only for as long as they're still riding.
+                let beyond = searching && t < start - 0.5 / fps
+                if beyond, let since = follower.lostSince, since - t >= lostFor {
+                    begin = since
+                    break reading
+                }
                 // Lost for good going back: stay where they were last seen.
                 var box = step.box
                 if let since = follower.lostSince, since - t >= lostFor, let x = follower.xs.last, let y = follower.ys.last {
@@ -253,16 +271,88 @@ enum WaveTracker {
                 box.origin.y = min(max(box.origin.y, -box.height / 2), 1 - box.height / 2)
                 log?("back" + step.line(t).dropFirst("frame".count))
                 follower.record(box, at: t)
+                guard beyond else { continue }
+                let times = follower.times, xs = follower.xs, x = xs[xs.count - 1]
+                if x > rightEdge {
+                    begin = t
+                    break reading
+                }
+                // Going back a rider travels right; barely at all over the
+                // window, they were waiting or paddling in. The ride starts
+                // where they set off, just before they were last that still.
+                if times[0] - t >= stallWindow,
+                   let from = times.firstIndex(where: { $0 <= t + stallWindow }),
+                   x - xs[from] < stallDistance {
+                    let most = xs[from...].max() ?? x
+                    let off = (from..<xs.count).first { xs[$0] >= most - stallDistance } ?? from
+                    begin = max(t, times[off] - 0.5)
+                    break reading
+                }
             }
             pieceEnd = pieceStart
         }
+        if let begin {
+            log?(String(format: "start,%.3f", begin))
+        }
         // Forwards from here, a fresh tracker with the way back as the
-        // surfer's history, in time order.
+        // surfer's history, in time order, from where the ride starts.
+        let from = min(begin ?? 0, start) - 0.5 / fps
+        let kept = follower.times.indices.filter { follower.times[$0] >= from }
         var forward = Follower(seed: seed, picture: frames.picture, orientation: .up)
-        forward.times = follower.times.reversed()
-        forward.xs = follower.xs.reversed()
-        forward.ys = follower.ys.reversed()
+        forward.times = kept.map { follower.times[$0] }.reversed()
+        forward.xs = kept.map { follower.xs[$0] }.reversed()
+        forward.ys = kept.map { follower.ys[$0] }.reversed()
         return forward
+    }
+
+    /// The clip was made to end later than the path does: follows the surfer on
+    /// from the end of it, staying where they were last seen if they're lost.
+    static func extendForward(_ track: WaveTrack, asset: AVAsset, to end: Double) async throws -> WaveTrack {
+        let frames = try await Frames(asset: asset)
+        let fps = Double(Frames.rate)
+        let last = track.start + Double(track.xs.count - 1) * track.step
+        guard end > last + track.step / 2, !track.xs.isEmpty else { return track }
+        var follower = Follower(seed: riderBox(at: track.center(at: last), picture: frames.picture),
+                                picture: frames.picture, orientation: .up)
+        // The last second of the path, so their speed says where to look.
+        for i in track.xs.indices where track.start + Double(i) * track.step >= last - 1 {
+            follower.times.append(track.start + Double(i) * track.step)
+            follower.xs.append(Double(track.xs[i]))
+            follower.ys.append(Double(track.ys[i]))
+        }
+        let known = follower.times.count
+        let (reader, output) = try frames.reader(from: last, seconds: end - last + 0.5 / fps)
+        defer { reader.cancelReading() }
+        while let sample = output.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            let t = sample.presentationTimeStamp.seconds
+            guard t > last + 0.5 / fps, t <= end + 0.5 / fps,
+                  let buffer = sample.imageBuffer, let luma = Luma(buffer) else { continue }
+            guard let step = try follower.follow(buffer, luma: luma, at: t) else { break }
+            var box = step.box
+            if let since = follower.lostSince, t - since >= lostFor, let x = follower.xs.last, let y = follower.ys.last {
+                box = riderBox(at: CGPoint(x: x, y: y), picture: frames.picture)
+            }
+            box.origin.x = min(max(box.origin.x, -box.width / 2), 1 - box.width / 2)
+            box.origin.y = min(max(box.origin.y, -box.height / 2), 1 - box.height / 2)
+            follower.record(box, at: t)
+        }
+        let xs = Array(follower.xs[known...]), ys = Array(follower.ys[known...])
+        guard !xs.isEmpty else { return track }
+        // Smoothed as the rest of the path was, and joined onto it without a
+        // jump: the gap where they meet is spread over the stretch added.
+        let n = xs.count, half = max(1, Int(fps / 2))
+        func smooth(_ v: [Double], _ i: Int) -> Double {
+            let lo = max(0, i - half), hi = min(n - 1, i + half)
+            return v[lo...hi].reduce(0, +) / Double(hi - lo + 1)
+        }
+        let gapX = Double(track.xs[track.xs.count - 1]) - smooth(xs, 0)
+        let gapY = Double(track.ys[track.ys.count - 1]) - smooth(ys, 0)
+        var longer = track
+        longer.xs += (0..<n).map { Float(smooth(xs, $0) + gapX * Double(n - $0) / Double(n + 1)) }
+        longer.ys += (0..<n).map { Float(smooth(ys, $0) + gapY * Double(n - $0) / Double(n + 1)) }
+        longer.end = max(track.end, end)
+        return longer
     }
 
     // MARK: Finding the surfer at the bookmark
@@ -274,7 +364,7 @@ enum WaveTracker {
         var alive = true
     }
 
-    /// The rider at the right edge, and the moment their box was taken.
+    /// The furthest right rider, and the moment their box was taken.
     private static func findRider(_ frames: Frames, start: Double, orientation: CGImagePropertyOrientation,
                                   log: ((String) -> Void)?) throws -> (CGRect, Double)? {
         let fps = Double(Frames.rate), picture = frames.picture
@@ -300,9 +390,8 @@ enum WaveTracker {
             if frame == compareFrames {
                 guard let first, let now = Luma(buffer) else { return nil }
                 let boxes = movingDarkShapes(now: now, before: first, orientation: orientation)
-                    .filter { $0.x > rightEdge }
                     .sorted { $0.x > $1.x }
-                    .prefix(8)
+                    .prefix(candidateCount)
                     .map { riderBox(at: $0, picture: picture) }
                 shapes = (boxes, t)
                 candidates = boxes.map {
@@ -338,7 +427,7 @@ enum WaveTracker {
         }
         let best = candidates.indices
             .filter { candidates[$0].alive && candidates[$0].startX - candidates[$0].x > 0.01 }
-            .max { candidates[$0].startX - candidates[$0].x < candidates[$1].startX - candidates[$1].x }
+            .max { candidates[$0].startX < candidates[$1].startX }
         guard let best else { return nil }
         return (shapes.boxes[best], shapes.time)
     }

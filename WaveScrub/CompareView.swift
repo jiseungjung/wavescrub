@@ -544,7 +544,7 @@ final class CompareSession: ObservableObject {
 
     private func fullRange(_ pane: ComparePane) -> ClosedRange<Double> {
         guard let clip = pane.clip else { return 0...0 }
-        if let track = track(for: pane) { return track.start...max(track.end, track.start + 0.5) }
+        if let track = track(for: pane) { return clip.wave.clip(track) }
         let end = min(clip.video.info.duration, clip.wave.time + Self.unfollowedLength)
         return clip.wave.time...max(end, clip.wave.time + 0.5)
     }

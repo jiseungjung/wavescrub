@@ -46,6 +46,10 @@ struct WaveLoopView: View {
     @State private var note: String?
     /// How big the video is on screen, for exports as wide as what you see.
     @State private var viewSize: CGSize = .zero
+    /// Moving where the wave's clip starts and ends, on the strip of frames.
+    @State private var trimming = false
+    @State private var trimStart: Double = 0
+    @State private var trimEnd: Double = 0
 
     /// How long to loop from a bookmark while the surfer is still being found.
     private static let unfollowedLength = 12.0
@@ -59,14 +63,15 @@ struct WaveLoopView: View {
                 loop: loop,
                 videoSize: model.videoSize,
                 orientation: model.videoOrientation,
-                track: picking ? nil : track,
+                track: picking || trimming ? nil : track,
                 span: span,
-                stillID: picking ? waveID : nil,
+                stillID: picking || trimming ? waveID : nil,
                 onTap: picking ? { point in pick(point) } : nil,
                 onPlainTap: {
+                    guard !trimming else { return }
                     withAnimation(.easeInOut(duration: 0.2)) { controlsHidden.toggle() }
                 },
-                onSwipe: { step($0) },
+                onSwipe: { if !trimming { step($0) } },
                 onZoom: { model.loopSpan = $0 }
             )
             .ignoresSafeArea()
@@ -128,6 +133,7 @@ struct WaveLoopView: View {
             model.priorityWaveID = nil
         }
         .onChange(of: waveID) {
+            trimming = false
             picking = waveID.map { model.unfoundWaveIDs.contains($0) } ?? false
             pickTime = wave?.time ?? 0
             if let waveID { lastWave[choice] = waveID }
@@ -136,12 +142,14 @@ struct WaveLoopView: View {
         }
         .onChange(of: track) {
             keepSpan()
-            refresh()
+            // The frame being looked at stays put while moving the start and end.
+            if !trimming { refresh() }
         }
         // Another video opened: start it fresh, from its first wave.
         .onChange(of: model.openedCount) {
             exportJob?.cancel()
             exporting = false
+            trimming = false
             chosen = []
             onlySurfer = nil
             starredOnly = false
@@ -169,8 +177,9 @@ struct WaveLoopView: View {
     }
 
     private var wave: Wave? { model.waves.first { $0.id == waveID } }
-    /// The bars always show while tapping the surfer or with nothing marked.
-    private var showsControls: Bool { !controlsHidden || picking || model.waves.isEmpty }
+    /// The bars always show while tapping the surfer, moving the start and
+    /// end, or with nothing marked.
+    private var showsControls: Bool { !controlsHidden || picking || trimming || model.waves.isEmpty }
     /// The waves you can go through: everyone's, or one surfer's.
     private var shownWaves: [Wave] {
         model.waves.filter {
@@ -195,7 +204,7 @@ struct WaveLoopView: View {
 
     private var topBar: some View {
         Group {
-            if exporting { exportTopBar } else { watchTopBar }
+            if exporting { exportTopBar } else if trimming { trimTopBar } else { watchTopBar }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -222,6 +231,20 @@ struct WaveLoopView: View {
                     .disabled(exportProgress != nil)
                 Spacer()
                 speedButton
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    /// Moving the start and end: Cancel leaves the clip as it was.
+    private var trimTopBar: some View {
+        ZStack {
+            Text("Start and end").font(.headline)
+            HStack {
+                Button("Cancel") { setTrimming(false) }
+                Spacer()
+                Button("Done") { finishTrimming() }
+                    .font(.body.weight(.semibold))
             }
         }
         .foregroundStyle(.white)
@@ -255,6 +278,11 @@ struct WaveLoopView: View {
                 Button { model.showingPeople = true } label: {
                     Label("Who's surfing", systemImage: "person.2")
                 }
+                // The tracker started or ended the ride in the wrong place.
+                Button { setTrimming(true) } label: {
+                    Label("Adjust start and end", systemImage: "timeline.selection")
+                }
+                .disabled(picking || track == nil)
                 // Wrong person, or the ride cut short: track the surfer again.
                 Button { beginPicking() } label: {
                     Label("Track the surfer", systemImage: "person.crop.rectangle")
@@ -294,11 +322,12 @@ struct WaveLoopView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private enum Status { case pick, finding }
+    private enum Status { case pick, finding, extending }
 
     private var status: Status? {
-        guard let waveID else { return nil }
+        guard let waveID, !trimming else { return nil }
         if picking { return .pick }
+        if model.isExtending(waveID) { return .extending }
         return model.tracks[waveID] == nil ? .finding : nil
     }
 
@@ -311,6 +340,9 @@ struct WaveLoopView: View {
             case .finding:
                 ProgressView()
                 Text("Finding the surfer…")
+            case .extending:
+                ProgressView()
+                Text("Following the surfer into the new part…")
             }
         }
         .font(.callout)
@@ -342,20 +374,31 @@ struct WaveLoopView: View {
     /// it, on one backing so nothing shows through between them.
     private var bottomPanel: some View {
         VStack(spacing: 0) {
-            if picking, let wave {
+            if trimming {
+                if let asset = model.asset {
+                    TrimStrip(asset: asset, duration: model.duration, start: $trimStart, end: $trimEnd) {
+                        loop.show($0)
+                    }
+                    .padding(.top, 10)
+                    .padding(.bottom, 14)
+                }
+            } else if picking, let wave {
                 pickTimeBar(wave)
             } else if wave != nil {
                 LoopScrubBar(loop: loop, clock: loop.clock)
             }
-            if showsFilter { surferFilter.padding(.top, wave == nil ? 12 : 4) }
-            waveNames
-                .padding(.top, showsFilter ? 10 : wave == nil ? 12 : 2)
-            if exporting {
-                exportBar
-                    .padding(.bottom, 6)
-            } else {
-                findButton
-                    .padding(.bottom, 6)
+            // Moving the start and end stays on this one wave.
+            if !trimming {
+                if showsFilter { surferFilter.padding(.top, wave == nil ? 12 : 4) }
+                waveNames
+                    .padding(.top, showsFilter ? 10 : wave == nil ? 12 : 2)
+                if exporting {
+                    exportBar
+                        .padding(.bottom, 6)
+                } else {
+                    findButton
+                        .padding(.bottom, 6)
+                }
             }
         }
         .background {
@@ -567,7 +610,10 @@ struct WaveLoopView: View {
         guard let asset = model.asset else { return }
         let waves = model.waves.filter { chosen.contains($0.id) }.sorted { $0.time < $1.time }
         let pieces = waves.compactMap { w in
-            model.tracks[w.id].map { ClipExport.Piece(start: $0.start, end: $0.end, track: $0) }
+            model.tracks[w.id].map { track in
+                let clip = w.clip(track)
+                return ClipExport.Piece(start: clip.lowerBound, end: clip.upperBound, track: track)
+            }
         }
         guard !pieces.isEmpty else { return }
         let shown = ClipExport.shown(span: span, screen: viewSize, picture: model.videoSize)
@@ -613,6 +659,24 @@ struct WaveLoopView: View {
         waveID = waves[next].id
     }
 
+    /// Shows the frame at the clip's start, still, with the strip of frames
+    /// under it. Cancel or Done goes back to looping.
+    private func setTrimming(_ on: Bool) {
+        if on, let wave, let track {
+            let clip = wave.clip(track)
+            trimStart = clip.lowerBound
+            trimEnd = clip.upperBound
+        }
+        withAnimation(.easeInOut(duration: 0.2)) { trimming = on }
+        controlsHidden = false
+        refresh()
+    }
+
+    private func finishTrimming() {
+        if let waveID { model.setClip(waveID, start: trimStart, end: trimEnd) }
+        setTrimming(false)
+    }
+
     private func beginPicking() {
         picking = true
         pickTime = wave?.time ?? 0
@@ -631,10 +695,13 @@ struct WaveLoopView: View {
             loop.stop()
             return
         }
-        if picking {
+        if trimming {
+            loop.still(asset, at: trimStart)
+        } else if picking {
             loop.still(asset, at: pickTime)
         } else if let track {
-            loop.loop(asset, from: track.start, to: track.end, followed: true)
+            let clip = wave.clip(track)
+            loop.loop(asset, from: clip.lowerBound, to: clip.upperBound, followed: true)
         } else {
             loop.loop(asset, from: wave.time, to: min(model.duration, wave.time + Self.unfollowedLength))
         }
@@ -980,6 +1047,10 @@ final class FollowingPlayerView: UIView {
     /// The player's newest frame, and the frame last drawn, so a paused one
     /// can be drawn again at a new zoom.
     private var playerFrame: LoopFrames.Frame?
+    /// The copy of the clip the player's newest frame came from. Once it's
+    /// gone, so is the frame: the last frame of the video before, drawn with
+    /// the new one's turn, showed for a moment upside down.
+    private weak var playerFrameItem: AVPlayerItem?
     private var drawnFrame: LoopFrames.Frame?
     private var needsRedraw = false
 
@@ -1112,8 +1183,12 @@ final class FollowingPlayerView: UIView {
             if output.hasNewPixelBuffer(forItemTime: itemTime),
                let buffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &shownAt) {
                 playerFrame = (shownAt.seconds, buffer, nil)
+                playerFrameItem = player.currentItem
             }
         }
+        let items = (player as? AVQueuePlayer)?.items() ?? [player.currentItem].compactMap { $0 }
+        if let item = playerFrameItem, !items.contains(item) { playerFrameItem = nil }
+        if playerFrameItem == nil { playerFrame = nil }
         // While sliding, the frame got ready, until the player catches up
         // with a sharp one of the same moment.
         var frame = playerFrame
@@ -1226,6 +1301,216 @@ final class FollowingPlayerView: UIView {
     /// Swiping left brings the next wave in, as paging through photos does.
     @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
         onSwipe(gesture.direction == .left ? 1 : -1)
+    }
+}
+
+/// The frames around a wave's clip, with a handle at each end to move where
+/// it starts and ends, as trimming a video in Photos does. It shows a few
+/// seconds either side to drag out into; holding a handle against either end
+/// of the strip brings in more of the video that way, faster the longer it's
+/// held, as far as the video goes.
+struct TrimStrip: View {
+    let asset: AVAsset
+    let duration: Double
+    @Binding var start: Double
+    @Binding var end: Double
+    /// The moment to show while a handle moves.
+    var onMove: (Double) -> Void
+
+    /// The stretch of the video the strip shows.
+    @State private var lo: Double?
+    @State private var hi: Double = 0
+    @State private var thumbs: [(time: Double, image: UIImage)] = []
+    @State private var held: Handle?
+    @State private var heldSince = Date()
+    @State private var fingerX: CGFloat = 0
+    /// How far from the handle's middle the finger took hold of it.
+    @State private var grab: CGFloat = 0
+    @State private var width: CGFloat = 1
+
+    private enum Handle { case start, end }
+    /// Seconds shown either side of the clip to begin with.
+    private static let pad = 3.0
+    private static let shortest = 0.5
+    private static let handle: CGFloat = 16
+    /// A finger this close to either end of the strip brings in more video.
+    private static let edgeZone: CGFloat = 30
+    private static let tick = 1.0 / 30
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(String(format: "%.1fs", end - start))
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(.white)
+            GeometryReader { geo in
+                strip(height: geo.size.height)
+                    .onAppear { width = geo.size.width }
+                    .onChange(of: geo.size.width) { width = geo.size.width }
+            }
+            .frame(height: 52)
+            .coordinateSpace(name: "trim")
+            .padding(.horizontal, 16)
+        }
+        .onAppear {
+            guard lo == nil else { return }
+            lo = max(0, start - Self.pad)
+            hi = min(duration, end + Self.pad)
+        }
+        .onReceive(Timer.publish(every: Self.tick, on: .main, in: .common).autoconnect()) { _ in bringInMore() }
+        .task(id: thumbKey) { await makeThumbs() }
+    }
+
+    // MARK: Drawing
+
+    private var inner: CGFloat { max(1, width - 2 * Self.handle) }
+    private var slotCount: Int { max(4, Int(inner / 36)) }
+
+    private func x(_ t: Double) -> CGFloat {
+        guard let lo, hi > lo else { return Self.handle }
+        return Self.handle + inner * CGFloat((t - lo) / (hi - lo))
+    }
+
+    private func time(_ x: CGFloat) -> Double {
+        guard let lo, hi > lo else { return 0 }
+        let f = min(max(0, (x - Self.handle) / inner), 1)
+        return lo + Double(f) * (hi - lo)
+    }
+
+    private func slotTime(_ i: Int) -> Double {
+        guard let lo else { return 0 }
+        return lo + (Double(i) + 0.5) * (hi - lo) / Double(slotCount)
+    }
+
+    private func strip(height: CGFloat) -> some View {
+        let xs = x(start), xe = x(end)
+        let count = slotCount
+        let slot = inner / CGFloat(count)
+        return ZStack(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                ForEach(0..<count, id: \.self) { i in
+                    Group {
+                        if let image = nearest(slotTime(i)) {
+                            Image(uiImage: image).resizable().scaledToFill()
+                        } else {
+                            Color.white.opacity(0.08)
+                        }
+                    }
+                    .frame(width: slot, height: height)
+                    .clipped()
+                }
+            }
+            .offset(x: Self.handle)
+            // Outside the clip is dimmed.
+            Rectangle().fill(.black.opacity(0.6))
+                .frame(width: max(0, xs - Self.handle), height: height)
+                .offset(x: Self.handle)
+            Rectangle().fill(.black.opacity(0.6))
+                .frame(width: max(0, width - Self.handle - xe), height: height)
+                .offset(x: xe)
+            // The clip, edged in yellow.
+            Rectangle().strokeBorder(Color.yellow, lineWidth: 3)
+                .frame(width: max(0, xe - xs), height: height)
+                .offset(x: xs)
+            handleView(.start, height: height).offset(x: xs - Self.handle)
+            handleView(.end, height: height).offset(x: xe)
+        }
+        .frame(width: width, height: height, alignment: .topLeading)
+    }
+
+    private func handleView(_ which: Handle, height: CGFloat) -> some View {
+        UnevenRoundedRectangle(cornerRadii: which == .start
+                               ? .init(topLeading: 6, bottomLeading: 6)
+                               : .init(bottomTrailing: 6, topTrailing: 6))
+            .fill(Color.yellow)
+            .overlay {
+                Image(systemName: which == .start ? "chevron.compact.left" : "chevron.compact.right")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.black)
+            }
+            .frame(width: Self.handle, height: height)
+            // Easier to catch than it is to see.
+            .contentShape(Rectangle().inset(by: -14))
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named("trim"))
+                    .onChanged { value in
+                        if held != which {
+                            held = which
+                            heldSince = Date()
+                            let middle = which == .start ? x(start) - Self.handle / 2 : x(end) + Self.handle / 2
+                            grab = value.startLocation.x - middle
+                        }
+                        fingerX = value.location.x
+                        follow()
+                    }
+                    .onEnded { _ in held = nil }
+            )
+    }
+
+    private func nearest(_ t: Double) -> UIImage? {
+        thumbs.min { abs($0.time - t) < abs($1.time - t) }?.image
+    }
+
+    // MARK: Moving
+
+    /// Puts the held handle under the finger.
+    private func follow() {
+        guard let held else { return }
+        let middle = fingerX - grab
+        if held == .start {
+            start = min(max(0, time(middle + Self.handle / 2)), end - Self.shortest)
+            onMove(start)
+        } else {
+            end = max(min(duration, time(middle - Self.handle / 2)), start + Self.shortest)
+            onMove(end)
+        }
+    }
+
+    /// A handle held against an end of the strip brings in more of the video
+    /// that way, faster the further in and the longer it's held.
+    private func bringInMore() {
+        guard held != nil, let lo else { return }
+        let heldFor = Date().timeIntervalSince(heldSince)
+        let speed = 3 * (1 + min(heldFor, 10) / 2)
+        let left = (Self.edgeZone - fingerX) / Self.edgeZone
+        let right = (fingerX - (width - Self.edgeZone)) / Self.edgeZone
+        if left > 0, lo > 0 {
+            self.lo = max(0, lo - speed * Double(min(1, max(0.3, left))) * Self.tick)
+            follow()
+        } else if right > 0, hi < duration {
+            hi = min(duration, hi + speed * Double(min(1, max(0.3, right))) * Self.tick)
+            follow()
+        }
+    }
+
+    // MARK: Frames
+
+    /// Changes whenever the strip shows a different stretch.
+    private var thumbKey: String {
+        guard let lo else { return "" }
+        return String(format: "%.2f-%.2f-%d", lo, hi, slotCount)
+    }
+
+    /// A small frame for each slot, once the strip has stopped moving. Ones
+    /// already made are kept, so the strip fills in rather than flashing.
+    private func makeThumbs() async {
+        guard let lo, hi > lo else { return }
+        try? await Task.sleep(for: .milliseconds(150))
+        let count = slotCount
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 200, height: 200)
+        let near = (hi - lo) / Double(count) / 2
+        let tolerance = CMTime(seconds: near, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
+        for i in 0..<count {
+            guard !Task.isCancelled else { return }
+            let t = lo + (Double(i) + 0.5) * (hi - lo) / Double(count)
+            if thumbs.contains(where: { abs($0.time - t) < near }) { continue }
+            guard let made = try? await generator.image(at: CMTime(seconds: t, preferredTimescale: 600)) else { continue }
+            thumbs.append((t, UIImage(cgImage: made.image)))
+        }
+        if thumbs.count > 120 { thumbs.removeFirst(thumbs.count - 120) }
     }
 }
 
