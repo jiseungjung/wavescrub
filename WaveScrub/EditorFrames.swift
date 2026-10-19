@@ -23,13 +23,13 @@ final class EditorFrames: @unchecked Sendable {
     private var bytes = 0
     private var cancelled = false
 
-    /// How wide the kept frames are, in pixels: sharp enough for the
-    /// editor's picture while sliding, small enough to keep them all.
-    static let width: CGFloat = 405
+    /// How wide the kept frames are, in pixels: the same as the editor's
+    /// video, so they look no different from it.
+    static let width: CGFloat = 720
     /// At most this many frames a second; more look no smoother while sliding.
     static let rate = 30.0
     /// Stops keeping frames past this, in case of a very long export.
-    static let maxBytes = 160_000_000
+    static let maxBytes = 350_000_000
 
     /// Starts decoding in the background, the waves in the order given.
     func start(asset: AVAsset, clips: [Clip], shown: (w: CGFloat, h: CGFloat),
@@ -143,7 +143,7 @@ final class EditorFrames: @unchecked Sendable {
                 let height = (Self.width * crop.height / max(1, crop.width) / 2).rounded() * 2
                 let piece = LoopFrames.cut(image, to: crop, size: CGSize(width: Self.width, height: height))
                 guard let data = context.jpegRepresentation(of: piece, colorSpace: space, options: [
-                    CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.6,
+                    CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.85,
                 ]) else { return false }
                 lock.lock()
                 defer { lock.unlock() }

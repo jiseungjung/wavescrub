@@ -293,8 +293,6 @@ struct ExportEditor: View {
             let items = layout
             ZStack(alignment: .topLeading) {
                 Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { selected = nil }
                 if let moving {
                     reorderRow(moving, width: width)
                         .onReceive(Timer.publish(every: 1.0 / 60, on: .main, in: .common).autoconnect()) { _ in
@@ -307,7 +305,7 @@ struct ExportEditor: View {
                     clipView(item.clip, width: w, x: x, screen: width)
                         .frame(width: w, height: Self.clipHeight)
                         .offset(x: x, y: 10)
-                        .onTapGesture { selected = selected == item.clip.id ? nil : item.clip.id }
+                        .allowsHitTesting(false)
                 }
                 if let item = items.first(where: { $0.clip.id == selected }) {
                     let x0 = origin + CGFloat(item.left) * pps
@@ -331,6 +329,12 @@ struct ExportEditor: View {
             .clipped()
             .contentShape(Rectangle())
             .gesture(scrub)
+            // Taps are worked out here rather than on each wave: a wave
+            // listening for its own tap held sliding back until the finger
+            // had gone a long way.
+            .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                tapTimeline(at: tap.location, origin: origin)
+            })
             .simultaneousGesture(pinch)
             .simultaneousGesture(reorder(origin: origin, width: width))
             .animation(.easeOut(duration: 0.18), value: moving?.id)
@@ -402,6 +406,18 @@ struct ExportEditor: View {
             )
     }
 
+    /// A tap on a wave selects it, or lets it go; anywhere else lets go.
+    private func tapTimeline(at point: CGPoint, origin: CGFloat) {
+        guard moving == nil, trim == nil else { return }
+        let t = Double((point.x - origin) / pps)
+        if point.y >= 10, point.y <= 10 + Self.clipHeight,
+           let item = layout.first(where: { t >= $0.left && t < $0.right }) {
+            selected = selected == item.clip.id ? nil : item.clip.id
+        } else {
+            selected = nil
+        }
+    }
+
     /// Sliding the timeline moves through the whole video.
     private var scrub: some Gesture {
         DragGesture(minimumDistance: 4)
@@ -410,6 +426,7 @@ struct ExportEditor: View {
                 if scrubFrom == nil {
                     scrubFrom = preview.time
                     preview.pause()
+                    print(String(format: "WSLAG start after %.0fpt", abs(value.translation.width)))
                 }
                 let t = (scrubFrom ?? 0) - Double(value.translation.width / pps)
                 let now = min(max(0, t), max(0, totalLength - 0.01))
@@ -655,7 +672,21 @@ struct ExportEditor: View {
             guard let built = try? await ClipExport.build(asset: asset, orientation: orientation, pieces: pieces,
                                                           shown: shown, rate: rate, width: Self.previewWidth),
                   run == buildRun else { return }
-            preview.load(built, at: min(max(0, time), max(0, built.duration - 0.01)), play: play)
+            let at = min(max(0, time), max(0, built.duration - 0.01))
+            preview.load(built, at: at, play: play)
+            if !play { showReady(at: at) }
+        }
+    }
+
+    /// The frame got ready for a moment of the finished video, held over it,
+    /// so the picture looks the same as while sliding.
+    private func showReady(at t: Double) {
+        let items = layout
+        guard let item = items.first(where: { t < $0.right }) ?? items.last else { return }
+        let source = min(item.clip.start + (t - item.left) * Double(max(0.05, rate)), item.clip.end)
+        frames.show(item.clip.id, at: source) { image in
+            guard abs(preview.time - t) < 0.0005, !preview.playing else { return }
+            preview.showStill(image)
         }
     }
 
@@ -821,8 +852,6 @@ final class EditorPlayer: ObservableObject {
     /// A frame got ready, shown over the video while sliding until the
     /// video's own sharp one of the same moment is there.
     @Published private(set) var still: CGImage?
-    /// Lets the still go once the seek under way lands.
-    private var dropStillAfterSeek = false
     /// Where a handle being moved wants the video, in its wave's own seconds,
     /// for when that wave's whole loop is ready to show.
     private(set) var wantedLoose: Double?
@@ -865,7 +894,7 @@ final class EditorPlayer: ObservableObject {
         player.replaceCurrentItem(with: item)
         duration = built.duration
         wantedLoose = nil
-        if !keepStill { dropStillAfterSeek = true }
+        if !keepStill { still = nil }
         seek(time)
         if play {
             still = nil
@@ -883,20 +912,19 @@ final class EditorPlayer: ObservableObject {
 
     /// While sliding: the timeline moves at once, and the picture follows.
     func slide(to t: Double) {
-        dropStillAfterSeek = false
         time = t
     }
 
-    /// The finger lifted: the video goes to that exact frame, and the
-    /// still goes once it's there.
+    /// The finger lifted: the video goes to that exact frame underneath,
+    /// ready to play from there. The frame got ready stays showing until it
+    /// plays: it's as sharp as the video, and swapping one for the other
+    /// showed as a jump in the picture.
     func settle() {
-        dropStillAfterSeek = true
         seek(time)
     }
 
     /// While a handle moves: the frame at it, when it's ready.
     func showStill(_ frame: CGImage?) {
-        dropStillAfterSeek = false
         still = frame
     }
 
@@ -923,14 +951,7 @@ final class EditorPlayer: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.seeking = false
-                if self.wanted != nil {
-                    self.seekToWanted()
-                } else if self.dropStillAfterSeek {
-                    self.dropStillAfterSeek = false
-                    // A moment for the video to draw the frame it landed on.
-                    try? await Task.sleep(for: .milliseconds(50))
-                    if !self.dropStillAfterSeek, self.wanted == nil, !self.seeking { self.still = nil }
-                }
+                if self.wanted != nil { self.seekToWanted() }
             }
         }
     }
