@@ -32,7 +32,8 @@ and report the result in plain language.
   top-right. The wave being watched starts checked.
 - Tapping a wave name checks / unchecks it and plays it. Waves not yet
   followed can't be checked. "Select all shown" checks every wave the
-  surfer / star filters show. "Edit N waves" opens the export editor.
+  surfer / star filters show; "Deselect all" then unchecks every wave,
+  hidden ones too. "Edit N waves" opens the export editor.
 - **Export editor** (rebuilt 2026-10-19 after the owner rejected per-wave
   strips on the loop screen; modeled on InShot / Instagram Edits): a full
   screen of its own. The finished video plays at the top exactly as it will

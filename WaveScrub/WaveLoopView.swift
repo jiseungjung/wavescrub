@@ -557,8 +557,9 @@ struct WaveLoopView: View {
         let count = chosen.count
         return HStack {
             Button(allChosen ? "Deselect all" : "Select all shown") {
+                // Clears every wave, including ones the filters hide.
                 if allChosen {
-                    chosen.subtract(choosable)
+                    chosen = []
                 } else {
                     chosen.formUnion(choosable)
                 }
