@@ -413,7 +413,7 @@ struct ExportEditor: View {
                 }
                 let t = (scrubFrom ?? 0) - Double(value.translation.width / pps)
                 let now = min(max(0, t), max(0, totalLength - 0.01))
-                preview.slide(to: now, frame: frame(at: now))
+                slide(to: now)
             }
             .onEnded { _ in
                 guard scrubFrom != nil else { return }
@@ -592,11 +592,11 @@ struct ExportEditor: View {
         let moved = Double(dx / pps) * Double(max(0.05, rate))
         if edge == .start {
             clips[i].start = min(max(c.loop.lowerBound, trim.start + moved), c.end - Self.shortest)
-            preview.showStill(frames.image(c.id, at: clips[i].start))
+            showFrame(c.id, at: clips[i].start)
             preview.seekLoose(clips[i].start - c.loop.lowerBound, speed: rate)
         } else {
             clips[i].end = max(min(c.loop.upperBound, trim.end + moved), c.start + Self.shortest)
-            preview.showStill(frames.image(c.id, at: clips[i].end))
+            showFrame(c.id, at: clips[i].end)
             preview.seekLoose(clips[i].end - c.loop.lowerBound, speed: rate)
         }
     }
@@ -659,12 +659,29 @@ struct ExportEditor: View {
         }
     }
 
-    /// The ready frame at a moment of the finished video, if there is one.
-    private func frame(at t: Double) -> CGImage? {
+    /// The timeline moves at once; the picture follows with the frame got
+    /// ready for that moment, or, without one, by seeking the video.
+    private func slide(to t: Double) {
         let items = layout
-        guard let item = items.first(where: { t < $0.right }) ?? items.last else { return nil }
-        let source = item.clip.start + (t - item.left) * Double(max(0.05, rate))
-        return frames.image(item.clip.id, at: min(source, item.clip.end))
+        guard let item = items.first(where: { t < $0.right }) ?? items.last else { return }
+        let source = min(item.clip.start + (t - item.left) * Double(max(0.05, rate)), item.clip.end)
+        preview.slide(to: t)
+        let asked = Date()
+        frames.show(item.clip.id, at: source) { image in
+            // Only the latest moment asked for counts.
+            guard abs(preview.time - t) < 0.0005, scrubFrom != nil else { return }
+            print(String(format: "WSLAG slide %.2f %@ %.0fms", t, image == nil ? "SEEK" : "frame",
+                         Date().timeIntervalSince(asked) * 1000))
+            if let image { preview.showStill(image) } else { preview.seek(t) }
+        }
+    }
+
+    /// While a handle moves: the frame at it, when it's ready.
+    private func showFrame(_ id: EditClip.ID, at source: Double) {
+        frames.show(id, at: source) { image in
+            guard trim != nil else { return }
+            preview.showStill(image)
+        }
     }
 
     private func nearest(_ id: EditClip.ID, _ t: Double) -> UIImage? {
@@ -864,17 +881,10 @@ final class EditorPlayer: ObservableObject {
         if !seeking { seekToWanted() }
     }
 
-    /// While sliding: shows the frame got ready at once, without seeking.
-    /// Without one, the video seeks there as it can.
-    func slide(to t: Double, frame: CGImage?) {
+    /// While sliding: the timeline moves at once, and the picture follows.
+    func slide(to t: Double) {
         dropStillAfterSeek = false
-        if let frame {
-            time = t
-            still = frame
-        } else {
-            still = nil
-            seek(t)
-        }
+        time = t
     }
 
     /// The finger lifted: the video goes to that exact frame, and the

@@ -34,9 +34,11 @@ final class EditorFrames: @unchecked Sendable {
     /// Starts decoding in the background, the waves in the order given.
     func start(asset: AVAsset, clips: [Clip], shown: (w: CGFloat, h: CGFloat),
                orientation: CGImagePropertyOrientation) {
-        Task.detached(priority: .userInitiated) { [self] in
+        // Behind anything on screen: getting frames ready mustn't hold up
+        // drawing the frames already ready.
+        Task.detached(priority: .utility) { [self] in
             guard let track = try? await asset.loadTracks(withMediaType: .video).first else { return }
-            let context = CIContext(options: [.cacheIntermediates: false])
+            let context = CIContext(options: [.cacheIntermediates: false, .priorityRequestLow: true])
             for clip in clips {
                 guard !isCancelled else { return }
                 decode(asset, track: track, clip: clip, shown: shown, orientation: orientation, context: context)
@@ -57,9 +59,40 @@ final class EditorFrames: @unchecked Sendable {
         return cancelled
     }
 
+    private let showQueue = DispatchQueue(label: "EditorFrames.show", qos: .userInteractive)
+    private var request: (id: UUID, time: Double, done: @MainActor (CGImage?) -> Void)?
+    private var showing = false
+
+    /// The frame for a moment, unpacked away from the screen's drawing and
+    /// handed back on the main queue: nil if it isn't ready. While one is
+    /// being unpacked only the latest wanted is kept, so sliding quickly
+    /// never queues up a backlog.
+    func show(_ id: UUID, at time: Double, then done: @escaping @MainActor (CGImage?) -> Void) {
+        lock.lock()
+        request = (id, time, done)
+        let start = !showing
+        showing = true
+        lock.unlock()
+        if start { showQueue.async { [self] in showNext() } }
+    }
+
+    private func showNext() {
+        lock.lock()
+        guard let next = request else {
+            showing = false
+            lock.unlock()
+            return
+        }
+        request = nil
+        lock.unlock()
+        let image = self.image(next.id, at: next.time, unpacked: true)
+        DispatchQueue.main.async { MainActor.assumeIsolated { next.done(image) } }
+        showNext()
+    }
+
     /// The kept frame of this wave nearest a moment in the original video,
-    /// if one is that close.
-    func image(_ id: UUID, at time: Double) -> CGImage? {
+    /// if one is that close. Unpacked, it's ready to draw at once.
+    func image(_ id: UUID, at time: Double, unpacked: Bool = false) -> CGImage? {
         lock.lock()
         let list = frames[id] ?? []
         lock.unlock()
@@ -73,7 +106,7 @@ final class EditorFrames: @unchecked Sendable {
             .min { abs(list[$0].time - time) < abs(list[$1].time - time) } ?? lo
         guard abs(list[best].time - time) < 1.5 / Self.rate,
               let source = CGImageSourceCreateWithData(list[best].data as CFData, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: unpacked] as CFDictionary)
     }
 
     private func decode(_ asset: AVAsset, track: AVAssetTrack, clip: Clip, shown: (w: CGFloat, h: CGFloat),
