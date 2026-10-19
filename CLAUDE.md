@@ -53,6 +53,12 @@ and report the result in plain language.
   letting go rebuilds the video in the new order, with the
   playhead at the start of the moved wave (owner's choice, like CapCut). The order is kept when
   going back to choose more waves (new ones go after, in time order). Top bar: back, "N waves" + length, speed, Export.
+- Sliding the timeline or moving a trim handle shows frames got ready in
+  advance (added 2026-10-19: seeking the video itself trailed the finger).
+  When the editor opens, every frame of each wave's loop is decoded once in
+  the background, cut as exported and kept small; the sharp frame replaces
+  it once the finger lifts. About 2 s per 10 s of video on the Mac; until a
+  wave's frames are ready, sliding seeks as before.
 - Trims never change the loop. They're kept while going back to choose
   more waves, and reset when export mode is left.
 - Each wave is exported as on the loop screen: following the surfer, as

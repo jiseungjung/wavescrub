@@ -31,6 +31,8 @@ struct ExportEditor: View {
 
     @State private var clips: [EditClip]
     @StateObject private var preview = EditorPlayer()
+    /// Small copies of every frame, for sliding without waiting.
+    @State private var frames = EditorFrames()
     @Environment(\.dismiss) private var dismiss
     @State private var selected: EditClip.ID?
     /// Points per second of the finished video, along the timeline.
@@ -117,10 +119,16 @@ struct ExportEditor: View {
             }
         }
         .statusBarHidden()
-        .onAppear { rebuild(at: 0, play: true) }
+        .onAppear {
+            rebuild(at: 0, play: true)
+            // The wave the video starts on first, then the rest in order.
+            frames.start(asset: asset, clips: clips.map { EditorFrames.Clip(id: $0.id, loop: $0.loop, track: $0.track) },
+                         shown: shown, orientation: orientation)
+        }
         .onDisappear {
             exportJob?.cancel()
             preview.stop()
+            frames.cancel()
         }
         .task { await makeThumbs() }
         .onChange(of: rate) { old, new in
@@ -181,6 +189,12 @@ struct ExportEditor: View {
     /// The finished video, framed as it will be.
     private var previewArea: some View {
         EditorPictureView(player: preview.player)
+            .overlay {
+                // While sliding: the frame got ready, until the video catches up.
+                if let still = preview.still {
+                    Image(decorative: still, scale: 1).resizable().scaledToFill()
+                }
+            }
             .aspectRatio(preview.aspect, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -398,9 +412,14 @@ struct ExportEditor: View {
                     preview.pause()
                 }
                 let t = (scrubFrom ?? 0) - Double(value.translation.width / pps)
-                preview.seek(min(max(0, t), max(0, totalLength - 0.01)))
+                let now = min(max(0, t), max(0, totalLength - 0.01))
+                preview.slide(to: now, frame: frame(at: now))
             }
-            .onEnded { _ in scrubFrom = nil }
+            .onEnded { _ in
+                guard scrubFrom != nil else { return }
+                scrubFrom = nil
+                preview.settle()
+            }
     }
 
     private var pinch: some Gesture {
@@ -573,9 +592,11 @@ struct ExportEditor: View {
         let moved = Double(dx / pps) * Double(max(0.05, rate))
         if edge == .start {
             clips[i].start = min(max(c.loop.lowerBound, trim.start + moved), c.end - Self.shortest)
+            preview.showStill(frames.image(c.id, at: clips[i].start))
             preview.seekLoose(clips[i].start - c.loop.lowerBound, speed: rate)
         } else {
             clips[i].end = max(min(c.loop.upperBound, trim.end + moved), c.start + Self.shortest)
+            preview.showStill(frames.image(c.id, at: clips[i].end))
             preview.seekLoose(clips[i].end - c.loop.lowerBound, speed: rate)
         }
     }
@@ -591,7 +612,7 @@ struct ExportEditor: View {
             guard let built = try? await ClipExport.build(asset: asset, orientation: orientation, pieces: [piece],
                                                           shown: shown, rate: rate, width: Self.previewWidth),
                   run == buildRun else { return }
-            preview.load(built, at: preview.wantedLoose ?? 0, play: false)
+            preview.load(built, at: preview.wantedLoose ?? 0, play: false, keepStill: true)
         }
     }
 
@@ -636,6 +657,14 @@ struct ExportEditor: View {
                   run == buildRun else { return }
             preview.load(built, at: min(max(0, time), max(0, built.duration - 0.01)), play: play)
         }
+    }
+
+    /// The ready frame at a moment of the finished video, if there is one.
+    private func frame(at t: Double) -> CGImage? {
+        let items = layout
+        guard let item = items.first(where: { t < $0.right }) ?? items.last else { return nil }
+        let source = item.clip.start + (t - item.left) * Double(max(0.05, rate))
+        return frames.image(item.clip.id, at: min(source, item.clip.end))
     }
 
     private func nearest(_ id: EditClip.ID, _ t: Double) -> UIImage? {
@@ -772,6 +801,11 @@ final class EditorPlayer: ObservableObject {
     @Published private(set) var duration: Double = 0
     /// The picture's width over its height.
     @Published private(set) var aspect: CGFloat = 9 / 16
+    /// A frame got ready, shown over the video while sliding until the
+    /// video's own sharp one of the same moment is there.
+    @Published private(set) var still: CGImage?
+    /// Lets the still go once the seek under way lands.
+    private var dropStillAfterSeek = false
     /// Where a handle being moved wants the video, in its wave's own seconds,
     /// for when that wave's whole loop is ready to show.
     private(set) var wantedLoose: Double?
@@ -806,7 +840,7 @@ final class EditorPlayer: ObservableObject {
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
     }
 
-    func load(_ built: ClipExport.Built, at time: Double, play: Bool) {
+    func load(_ built: ClipExport.Built, at time: Double, play: Bool, keepStill: Bool = false) {
         let item = AVPlayerItem(asset: built.composition)
         item.videoComposition = built.videoComposition
         let size = built.videoComposition.renderSize
@@ -814,8 +848,12 @@ final class EditorPlayer: ObservableObject {
         player.replaceCurrentItem(with: item)
         duration = built.duration
         wantedLoose = nil
+        if !keepStill { dropStillAfterSeek = true }
         seek(time)
-        if play { player.play() }
+        if play {
+            still = nil
+            player.play()
+        }
     }
 
     /// Goes to an exact frame. While a seek is under way only the latest
@@ -824,6 +862,32 @@ final class EditorPlayer: ObservableObject {
         time = t
         wanted = CMTime(seconds: t, preferredTimescale: 60000)
         if !seeking { seekToWanted() }
+    }
+
+    /// While sliding: shows the frame got ready at once, without seeking.
+    /// Without one, the video seeks there as it can.
+    func slide(to t: Double, frame: CGImage?) {
+        dropStillAfterSeek = false
+        if let frame {
+            time = t
+            still = frame
+        } else {
+            still = nil
+            seek(t)
+        }
+    }
+
+    /// The finger lifted: the video goes to that exact frame, and the
+    /// still goes once it's there.
+    func settle() {
+        dropStillAfterSeek = true
+        seek(time)
+    }
+
+    /// While a handle moves: the frame at it, when it's ready.
+    func showStill(_ frame: CGImage?) {
+        dropStillAfterSeek = false
+        still = frame
     }
 
     /// While a handle moves: a moment of that wave's whole loop, `offset`
@@ -849,7 +913,14 @@ final class EditorPlayer: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.seeking = false
-                if self.wanted != nil { self.seekToWanted() }
+                if self.wanted != nil {
+                    self.seekToWanted()
+                } else if self.dropStillAfterSeek {
+                    self.dropStillAfterSeek = false
+                    // A moment for the video to draw the frame it landed on.
+                    try? await Task.sleep(for: .milliseconds(50))
+                    if !self.dropStillAfterSeek, self.wanted == nil, !self.seeking { self.still = nil }
+                }
             }
         }
     }
@@ -859,6 +930,7 @@ final class EditorPlayer: ObservableObject {
             pause()
         } else {
             if time >= duration - 0.05 { seek(0) }
+            still = nil
             player.play()
         }
     }
