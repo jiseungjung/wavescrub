@@ -41,7 +41,9 @@ struct ExportEditor: View {
     @State private var trim: TrimDrag?
     /// A wave held and being dragged to a new place in the order.
     @State private var moving: MoveDrag?
-    @State private var moveStart: CGFloat = 0
+    /// Waits for a finger held still on a wave, to pick it up.
+    @State private var pressTask: Task<Void, Never>?
+    @State private var pressAt: CGPoint = .zero
     @State private var thumbs: [EditClip.ID: [(time: Double, image: UIImage)]] = [:]
     @State private var buildRun = 0
     @State private var exportJob: Task<Void, Never>?
@@ -64,7 +66,11 @@ struct ExportEditor: View {
     /// it to a new place, as in InShot or CapCut.
     private struct MoveDrag {
         let id: EditClip.ID
+        /// Where the finger is.
         var x: CGFloat
+        /// How far the row of tiles is moved over so the held wave's own
+        /// tile starts under the finger.
+        let shift: CGFloat
     }
 
     /// A handle being held. The timeline stays as it was when it was taken
@@ -418,13 +424,13 @@ struct ExportEditor: View {
     /// Where the held wave would land, from where the finger is.
     private func target(_ moving: MoveDrag, width: CGFloat) -> Int {
         let tile = tileSize(width)
-        let i = Int(((moving.x - rowLeft(width) - tile / 2) / (tile + 6)).rounded())
+        let i = Int(((moving.x - rowLeft(width) - moving.shift - tile / 2) / (tile + 6)).rounded())
         return min(max(0, i), clips.count - 1)
     }
 
     private func reorderRow(_ moving: MoveDrag, width: CGFloat) -> some View {
         let tile = tileSize(width)
-        let left = rowLeft(width)
+        let left = rowLeft(width) + moving.shift
         let landing = target(moving, width: width)
         let others = clips.filter { $0.id != moving.id }
         return ZStack(alignment: .topLeading) {
@@ -469,28 +475,51 @@ struct ExportEditor: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    /// Hold a wave, then drag it along to its new place.
+    /// Hold a wave still for a moment and it lifts, ready to drag along to
+    /// its new place. Moving first slides the timeline instead.
     private func reorder(origin: CGFloat, width: CGFloat) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.35, maximumDistance: 8)
-            .sequenced(before: DragGesture(minimumDistance: 0))
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard case .second(true, let drag) = value, let drag, trim == nil, scrubFrom == nil else { return }
-                if moving == nil {
-                    // The wave that was held, from where the finger first came down.
-                    let t = Double((drag.startLocation.x - origin) / pps)
-                    guard clips.count > 1,
-                          let held = layout.first(where: { t >= $0.left && t < $0.right })?.clip else { return }
-                    preview.pause()
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    // Starts in its own slot, under the finger as near as it can be.
-                    let i = clips.firstIndex(where: { $0.id == held.id }) ?? 0
-                    let tile = tileSize(width)
-                    moving = MoveDrag(id: held.id, x: rowLeft(width) + CGFloat(i) * (tile + 6) + tile / 2)
-                    moveStart = moving?.x ?? 0
+                pressAt = value.location
+                if moving != nil {
+                    moving?.x = value.location.x
+                    return
                 }
-                moving?.x = moveStart + drag.translation.width
+                if pressTask == nil {
+                    let down = value.startLocation
+                    pressTask = Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(350))
+                        guard !Task.isCancelled else { return }
+                        pickUp(at: down, origin: origin, width: width)
+                    }
+                }
+                if hypot(value.translation.width, value.translation.height) > 8 { pressTask?.cancel() }
             }
-            .onEnded { _ in drop(width: width) }
+            .onEnded { _ in
+                pressTask?.cancel()
+                pressTask = nil
+                if moving != nil { drop(width: width) }
+            }
+    }
+
+    /// Lifts the wave under the finger, with its tile right there.
+    private func pickUp(at point: CGPoint, origin: CGFloat, width: CGFloat) {
+        guard moving == nil, trim == nil, scrubFrom == nil, pinchBase == nil, clips.count > 1 else { return }
+        let t = Double((point.x - origin) / pps)
+        guard point.y >= 10, point.y <= 10 + Self.clipHeight,
+              let held = layout.first(where: { t >= $0.left && t < $0.right })?.clip,
+              let i = clips.firstIndex(where: { $0.id == held.id }) else { return }
+        preview.pause()
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        let tile = tileSize(width)
+        let row = CGFloat(clips.count) * (tile + 6) - 6
+        let left = rowLeft(width)
+        // The held tile's slot under the finger, as far as the row stays on screen.
+        let wanted = point.x - (left + CGFloat(i) * (tile + 6) + tile / 2)
+        let shift = min(max(wanted, 8 - left), max(8 - left, width - 8 - row - left))
+        withAnimation(.easeOut(duration: 0.18)) {
+            moving = MoveDrag(id: held.id, x: pressAt.x, shift: shift)
+        }
     }
 
     private func drop(width: CGFloat) {

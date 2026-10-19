@@ -44,8 +44,10 @@ and report the result in plain language.
   within its loop; while a handle moves the video shows that frame, and the
   waves close up on letting go. A selected wave can be put back to its
   whole loop or removed. Hold a wave and drag to reorder it (added
-  2026-10-19, like InShot / CapCut): the timeline turns into one square
-  tile per wave, the held one follows the finger and the others make room;
+  2026-10-19, like InShot / CapCut): held still for a moment, it lifts
+  without needing to move (a tap of haptics), and the timeline turns into
+  one square tile per wave, lined up so the held one is under the finger.
+  It follows the finger and the others make room;
   letting go rebuilds the video in the new order. The order is kept when
   going back to choose more waves (new ones go after, in time order). Top bar: back, "N waves" + length, speed, Export.
 - Trims never change the loop. They're kept while going back to choose
