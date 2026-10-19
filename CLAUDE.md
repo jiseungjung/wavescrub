@@ -42,7 +42,10 @@ and report the result in plain language.
   a white playhead in the middle: slide it to move through the whole video,
   pinch to zoom it. Tap a wave to select it: yellow handles trim it, only
   within its loop; while a handle moves the video shows that frame, and the
-  waves close up on letting go. A selected wave can be removed (no reset
+  waves close up on letting go. "Start here" / "End here" (added 2026-10-19,
+  like Premiere's trim to playhead) cut the wave under the playhead to it,
+  selected or not; greyed out if it would leave under half a second. A
+  selected wave can be removed (no reset
   button: the owner wanted undo instead). Undo / redo sit right of play
   (added 2026-10-19): every trim, reorder, removal and speed change can be
   undone and redone, up to 100 steps, while the editor is open. Hold a wave and drag to reorder it (added

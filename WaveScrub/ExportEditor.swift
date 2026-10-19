@@ -254,34 +254,74 @@ struct ExportEditor: View {
         .padding(.top, 8)
     }
 
-    /// The selected wave's length and what can be done to it, or a hint.
+    /// Trimming the wave under the playhead to it, as in Premiere; then the
+    /// selected wave and removing it, or a hint.
     private var clipBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
+            cutButton("Start here", icon: "arrow.right.to.line", edge: .start)
+            cutButton("End here", icon: "arrow.left.to.line", edge: .end)
+            Spacer(minLength: 4)
             if let c = clips.first(where: { $0.id == selected }) {
-                Circle().fill(c.color).frame(width: 10, height: 10)
-                Text(c.title).font(.callout.weight(.semibold)).lineLimit(1)
+                Circle().fill(c.color).frame(width: 8, height: 8)
+                Text(c.title).font(.footnote.weight(.semibold)).lineLimit(1)
                 Text(String(format: "%.1fs", (c.end - c.start) / Double(rate)))
-                    .font(.callout.monospacedDigit())
+                    .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
-                Spacer()
                 Button(role: .destructive) {
                     removeSelected()
                 } label: {
-                    Label("Remove", systemImage: "trash")
+                    Image(systemName: "trash").imageScale(.large)
                 }
+                .padding(.leading, 4)
             } else {
-                Spacer()
-                Text(moving == nil ? "Tap to trim · hold and drag to reorder" : "Drag to a new place")
+                Text(moving == nil ? "Hold to reorder" : "Drag to a new place")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.5))
-                Spacer()
+                    .lineLimit(1)
             }
         }
-        .font(.callout)
-        .labelStyle(.iconOnly)
-        .imageScale(.large)
         .foregroundStyle(.white)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
+    }
+
+    private func cutButton(_ title: String, icon: String, edge: Edge) -> some View {
+        Button { cut(edge) } label: {
+            Label(title, systemImage: icon)
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.14), in: Capsule())
+        }
+        .disabled(cutPoint(edge) == nil || trim != nil || moving != nil)
+    }
+
+    /// The wave under the playhead and the moment in it the playhead is at,
+    /// if cutting there leaves at least half a second of it.
+    private func cutPoint(_ edge: Edge) -> (index: Int, left: Double, source: Double)? {
+        let t = preview.time
+        let items = layout
+        guard let i = items.firstIndex(where: { t >= $0.left && t < $0.right }) else { return nil }
+        let c = items[i].clip
+        let source = c.start + (t - items[i].left) * Double(max(0.05, rate))
+        let left = edge == .start ? c.end - source : source - c.start
+        return left >= Self.shortest ? (i, items[i].left, source) : nil
+    }
+
+    /// Cuts the wave under the playhead to it; the rest closes up, and the
+    /// picture stays on the same frame.
+    private func cut(_ edge: Edge) {
+        guard let (i, left, source) = cutPoint(edge) else { return }
+        record(snapshot)
+        preview.pause()
+        if edge == .start {
+            clips[i].start = source
+            rebuild(at: left)
+        } else {
+            let t = preview.time
+            clips[i].end = source
+            rebuild(at: max(left, t - 0.02))
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     // MARK: Timeline
