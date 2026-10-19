@@ -32,28 +32,29 @@ and report the result in plain language.
   top-right. The wave being watched starts checked.
 - Tapping a wave name checks / unchecks it and plays it. Waves not yet
   followed can't be checked. "Select all shown" checks every wave the
-  surfer / star filters show. "Export N waves" makes one video.
-- Each wave plays as on the loop screen: following the surfer, as wide as the
-  screen shows at the video's zoom, cut to 9:16 (1080×1920) by trimming
-  sky and water above and below. Zoomed out too far for 9:16, it's as tall
-  as the picture instead (no black bars).
-- Several waves are stitched in time order with straight cuts. Exported at
-  the speed being watched, with sound, no labels.
-- Each checked wave has its own export start and end (added 2026-10-19), on
-  a strip under the video that only reaches as far as its loop. They start
-  as the whole loop each time export opens and never change the loop. While
-  a handle moves, the video shows that frame followed and cut; letting go
-  plays that part (near the end, for the end handle). "Play all" plays every
-  checked wave's part in turn, as the export will be; "Total" shows its
-  length at the export speed. Unchecked waves loop as usual.
-- In export mode the parts above and below the 9:16 frame are dimmed, so
-  what you see between the lines is what gets exported. Tap the video to
-  hide the bars and see the whole frame.
+  surfer / star filters show. "Edit N waves" opens the export editor.
+- **Export editor** (rebuilt 2026-10-19 after the owner rejected per-wave
+  strips on the loop screen; modeled on InShot / Instagram Edits): a full
+  screen of its own. The finished video plays at the top exactly as it will
+  be exported (all waves back to back, cut to 9:16, at the speed). Under it
+  a timeline with every wave side by side as frames cut like the export,
+  a white playhead in the middle: slide it to move through the whole video,
+  pinch to zoom it. Tap a wave to select it: yellow handles trim it, only
+  within its loop; while a handle moves the video shows that frame, and the
+  waves close up on letting go. A selected wave can be put back to its
+  whole loop or removed. Top bar: back, "N waves" + length, speed, Export.
+- Trims never change the loop. They're kept while going back to choose
+  more waves, and reset when export mode is left.
+- Each wave is exported as on the loop screen: following the surfer, as
+  wide as the screen shows at the video's zoom, cut to 9:16 (1080×1920) by
+  trimming sky and water above and below. Zoomed out too far for 9:16, it's
+  as tall as the picture instead (no black bars).
+- Waves are stitched in time order with straight cuts. Exported at the
+  speed chosen, with sound, no labels.
 - Saved straight into a "WaveScrub" album in Photos, then a "Saved to
-  Photos" card with Done and Share, like CapCut / InShot. The share sheet
-  only opens on Share, and leaves out "Save Video" (it's already saved, and
-  tapping it made a second copy). If saving failed, the card says so and
-  the share sheet keeps "Save Video".
+  Photos" card with Done, Share, and Keep editing. The share sheet only
+  opens on Share and leaves out "Save Video" (tapping it made a second
+  copy). If saving failed, the card says so and the share sheet keeps it.
 
 ## Planned: tagging several surfers in one video
 

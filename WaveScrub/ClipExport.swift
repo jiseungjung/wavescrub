@@ -49,11 +49,20 @@ enum ClipExport {
         return CGSize(width: width, height: (width * ratio / 2).rounded() * 2)
     }
 
-    /// Writes the video to a temporary file and returns it. `progress` is
-    /// called on the main queue, from 0 to 1.
-    static func export(asset: AVAsset, orientation: CGImagePropertyOrientation, pieces: [Piece],
-                       shown: (w: CGFloat, h: CGFloat), rate: Float, name: String,
-                       progress: @escaping @MainActor (Double) -> Void) async throws -> URL {
+    /// The waves back to back, each followed and cut as it will be exported,
+    /// ready to play or to write out.
+    struct Built {
+        let composition: AVComposition
+        let videoComposition: AVVideoComposition
+        /// Where each wave starts in the finished video, in its seconds.
+        let starts: [Double]
+        let duration: Double
+    }
+
+    /// The finished video, without writing it: for playing it back while
+    /// it's being put together. `width` is the picture's width in pixels.
+    static func build(asset: AVAsset, orientation: CGImagePropertyOrientation, pieces: [Piece],
+                      shown: (w: CGFloat, h: CGFloat), rate: Float, width: CGFloat = ClipExport.width) async throws -> Built {
         guard let source = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
         let sound = try await asset.loadTracks(withMediaType: .audio).first
         let (natural, transform, fps) = try await source.load(.naturalSize, .preferredTransform, .nominalFrameRate)
@@ -86,7 +95,8 @@ enum ClipExport {
                                        toDuration: CMTimeMultiplyByFloat64(cursor, multiplier: 1 / speed))
         }
 
-        let size = size(shown: shown, picture: picture)
+        let full = size(shown: shown, picture: picture)
+        let size = CGSize(width: (width / 2).rounded() * 2, height: (full.height * width / full.width / 2).rounded() * 2)
         let videoComposition = AVMutableVideoComposition(asset: composition) { request in
             var image = request.sourceImage
             // Frames may come as the camera stored them, on their side.
@@ -109,6 +119,18 @@ enum ClipExport {
         }
         videoComposition.renderSize = size
         videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(min(60, max(24, fps.rounded()))))
+        return Built(composition: composition, videoComposition: videoComposition,
+                     starts: cuts.map { $0.at / speed }, duration: cursor.seconds / speed)
+    }
+
+    /// Writes the video to a temporary file and returns it. `progress` is
+    /// called on the main queue, from 0 to 1.
+    static func export(asset: AVAsset, orientation: CGImagePropertyOrientation, pieces: [Piece],
+                       shown: (w: CGFloat, h: CGFloat), rate: Float, name: String,
+                       progress: @escaping @MainActor (Double) -> Void) async throws -> URL {
+        let built = try await build(asset: asset, orientation: orientation, pieces: pieces, shown: shown, rate: rate)
+        let composition = built.composition
+        let videoComposition = built.videoComposition
 
         guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
             throw Failure.failed("Couldn't export on this phone.")
