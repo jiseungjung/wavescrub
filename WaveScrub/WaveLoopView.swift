@@ -41,6 +41,9 @@ struct WaveLoopView: View {
     /// Where each chosen wave starts and ends in the export, kept while
     /// going back and forth between choosing waves and editing them.
     @State private var exportCuts: [Wave.ID: ExportCut] = [:]
+    /// The order the waves were put in, in the editor. Waves chosen later go
+    /// after them, in time order.
+    @State private var exportOrder: [Wave.ID] = []
     /// The export editor is open.
     @State private var editing = false
     /// A word that fades after a moment, like "Saved to Photos".
@@ -173,6 +176,7 @@ struct WaveLoopView: View {
                 ) { clips, exported in
                     for c in clips { exportCuts[c.id] = ExportCut(start: c.start, end: c.end) }
                     chosen = Set(clips.map(\.id))
+                    exportOrder = clips.map(\.id)
                     if exported { setExporting(false) }
                 }
                 .preferredColorScheme(.dark)
@@ -594,6 +598,7 @@ struct WaveLoopView: View {
             chosen = on ? Set([waveID].compactMap { $0 }.filter { model.tracks[$0] != nil }) : []
         }
         exportCuts = [:]
+        exportOrder = []
     }
 
     /// While exporting, a tap chooses the wave (or lets it go), and plays it.
@@ -607,7 +612,10 @@ struct WaveLoopView: View {
     /// The chosen waves in time order, each as long as its loop unless
     /// trimmed in the editor already.
     private var editClips: [EditClip] {
-        model.waves.filter { chosen.contains($0.id) }.sorted { $0.time < $1.time }.compactMap { w in
+        let place = { (w: Wave) in exportOrder.firstIndex(of: w.id) ?? Int.max }
+        return model.waves.filter { chosen.contains($0.id) }
+            .sorted { (place($0), $0.time) < (place($1), $1.time) }
+            .compactMap { w in
             guard let track = model.tracks[w.id] else { return nil }
             let clip = w.clip(track)
             let cut = exportCuts[w.id]

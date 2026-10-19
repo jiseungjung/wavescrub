@@ -42,14 +42,19 @@ and report the result in plain language.
   pinch to zoom it. Tap a wave to select it: yellow handles trim it, only
   within its loop; while a handle moves the video shows that frame, and the
   waves close up on letting go. A selected wave can be put back to its
-  whole loop or removed. Top bar: back, "N waves" + length, speed, Export.
+  whole loop or removed. Hold a wave and drag to reorder it (added
+  2026-10-19, like InShot / CapCut): the timeline turns into one square
+  tile per wave, the held one follows the finger and the others make room;
+  letting go rebuilds the video in the new order. The order is kept when
+  going back to choose more waves (new ones go after, in time order). Top bar: back, "N waves" + length, speed, Export.
 - Trims never change the loop. They're kept while going back to choose
   more waves, and reset when export mode is left.
 - Each wave is exported as on the loop screen: following the surfer, as
   wide as the screen shows at the video's zoom, cut to 9:16 (1080×1920) by
   trimming sky and water above and below. Zoomed out too far for 9:16, it's
   as tall as the picture instead (no black bars).
-- Waves are stitched in time order with straight cuts. Exported at the
+- Waves are stitched in the editor's order (time order to begin with) with
+  straight cuts. Exported at the
   speed chosen, with sound, no labels.
 - Saved straight into a "WaveScrub" album in Photos, then a "Saved to
   Photos" card with Done, Share, and Keep editing. The share sheet only

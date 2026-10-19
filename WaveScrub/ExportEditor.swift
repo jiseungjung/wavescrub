@@ -39,6 +39,9 @@ struct ExportEditor: View {
     /// Where the timeline was when a finger started sliding it.
     @State private var scrubFrom: Double?
     @State private var trim: TrimDrag?
+    /// A wave held and being dragged to a new place in the order.
+    @State private var moving: MoveDrag?
+    @State private var moveStart: CGFloat = 0
     @State private var thumbs: [EditClip.ID: [(time: Double, image: UIImage)]] = [:]
     @State private var buildRun = 0
     @State private var exportJob: Task<Void, Never>?
@@ -56,6 +59,13 @@ struct ExportEditor: View {
     private static let previewWidth: CGFloat = 720
 
     private enum Edge { case start, end }
+
+    /// Holding a wave turns the timeline into one tile per wave, to drag
+    /// it to a new place, as in InShot or CapCut.
+    private struct MoveDrag {
+        let id: EditClip.ID
+        var x: CGFloat
+    }
 
     /// A handle being held. The timeline stays as it was when it was taken
     /// hold of, so the handle stays under the finger; the waves close up
@@ -218,7 +228,7 @@ struct ExportEditor: View {
                 }
             } else {
                 Spacer()
-                Text("Tap a wave to trim it · pinch to zoom")
+                Text(moving == nil ? "Tap to trim · hold and drag to reorder" : "Drag to a new place")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.5))
                 Spacer()
@@ -265,6 +275,9 @@ struct ExportEditor: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { selected = nil }
+                if let moving {
+                    reorderRow(moving, width: width)
+                } else {
                 ForEach(items, id: \.clip.id) { item in
                     let x = origin + CGFloat(item.left) * pps
                     let w = max(2, CGFloat(item.right - item.left) * pps)
@@ -289,12 +302,15 @@ struct ExportEditor: View {
                     .shadow(color: .black.opacity(0.5), radius: 2)
                     .offset(x: width / 2 - 1, y: 2)
                     .allowsHitTesting(false)
+                }
             }
             .frame(width: width, height: geo.size.height, alignment: .topLeading)
             .clipped()
             .contentShape(Rectangle())
             .gesture(scrub)
             .simultaneousGesture(pinch)
+            .simultaneousGesture(reorder(origin: origin, width: width))
+            .animation(.easeOut(duration: 0.18), value: moving?.id)
         }
         .frame(height: Self.clipHeight + 20)
     }
@@ -367,7 +383,7 @@ struct ExportEditor: View {
     private var scrub: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
-                guard trim == nil, pinchBase == nil else { return }
+                guard trim == nil, pinchBase == nil, moving == nil else { return }
                 if scrubFrom == nil {
                     scrubFrom = preview.time
                     preview.pause()
@@ -385,6 +401,110 @@ struct ExportEditor: View {
                 pps = min(max(8, (pinchBase ?? pps) * scale), 300)
             }
             .onEnded { _ in pinchBase = nil }
+    }
+
+    // MARK: Reordering
+
+    /// How wide each wave's tile is while reordering: all of them fit.
+    private func tileSize(_ width: CGFloat) -> CGFloat {
+        min(56, max(26, (width - 32) / CGFloat(max(1, clips.count)) - 6))
+    }
+
+    private func rowLeft(_ width: CGFloat) -> CGFloat {
+        let tile = tileSize(width)
+        return (width - CGFloat(clips.count) * (tile + 6) + 6) / 2
+    }
+
+    /// Where the held wave would land, from where the finger is.
+    private func target(_ moving: MoveDrag, width: CGFloat) -> Int {
+        let tile = tileSize(width)
+        let i = Int(((moving.x - rowLeft(width) - tile / 2) / (tile + 6)).rounded())
+        return min(max(0, i), clips.count - 1)
+    }
+
+    private func reorderRow(_ moving: MoveDrag, width: CGFloat) -> some View {
+        let tile = tileSize(width)
+        let left = rowLeft(width)
+        let landing = target(moving, width: width)
+        let others = clips.filter { $0.id != moving.id }
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(others.enumerated()), id: \.element.id) { i, c in
+                let slot = i >= landing ? i + 1 : i
+                tileView(c, size: tile)
+                    .offset(x: left + CGFloat(slot) * (tile + 6), y: 10 + (Self.clipHeight - tile) / 2)
+            }
+            if let c = clips.first(where: { $0.id == moving.id }) {
+                tileView(c, size: tile)
+                    .scaleEffect(1.15)
+                    .shadow(color: .black.opacity(0.6), radius: 6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.yellow, lineWidth: 2).scaleEffect(1.15))
+                    .offset(x: moving.x - tile / 2, y: 10 + (Self.clipHeight - tile) / 2)
+                    .animation(nil, value: moving.x)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// A wave as one square: its middle frame and its name.
+    private func tileView(_ c: EditClip, size: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            Group {
+                if let image = nearest(c.id, (c.start + c.end) / 2) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Color.white.opacity(0.1)
+                }
+            }
+            .frame(width: size, height: size)
+            .clipped()
+            Text(c.title)
+                .font(.system(size: 9, weight: .bold))
+                .lineLimit(1)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 3)
+                .frame(maxWidth: .infinity)
+                .background(c.color.opacity(0.85))
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    /// Hold a wave, then drag it along to its new place.
+    private func reorder(origin: CGFloat, width: CGFloat) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.35, maximumDistance: 8)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                guard case .second(true, let drag) = value, let drag, trim == nil, scrubFrom == nil else { return }
+                if moving == nil {
+                    // The wave that was held, from where the finger first came down.
+                    let t = Double((drag.startLocation.x - origin) / pps)
+                    guard clips.count > 1,
+                          let held = layout.first(where: { t >= $0.left && t < $0.right })?.clip else { return }
+                    preview.pause()
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    // Starts in its own slot, under the finger as near as it can be.
+                    let i = clips.firstIndex(where: { $0.id == held.id }) ?? 0
+                    let tile = tileSize(width)
+                    moving = MoveDrag(id: held.id, x: rowLeft(width) + CGFloat(i) * (tile + 6) + tile / 2)
+                    moveStart = moving?.x ?? 0
+                }
+                moving?.x = moveStart + drag.translation.width
+            }
+            .onEnded { _ in drop(width: width) }
+    }
+
+    private func drop(width: CGFloat) {
+        guard let moving, let from = clips.firstIndex(where: { $0.id == moving.id }) else {
+            self.moving = nil
+            return
+        }
+        let to = target(moving, width: width)
+        let clip = clips.remove(at: from)
+        clips.insert(clip, at: to)
+        self.moving = nil
+        selected = nil
+        if from != to { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        rebuild(at: layout[to].left + 0.01)
     }
 
     // MARK: Trimming
