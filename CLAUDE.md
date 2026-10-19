@@ -46,7 +46,9 @@ and report the result in plain language.
   whole loop or removed. Hold a wave and drag to reorder it (added
   2026-10-19, like InShot / CapCut): held still for a moment, it lifts
   without needing to move (a tap of haptics), and the timeline turns into
-  one square tile per wave, lined up so the held one is under the finger.
+  one square tile per wave. The held wave stays exactly where it was
+  pressed and the others line up either side, off screen if need be;
+  holding it near a screen edge scrolls the row.
   It follows the finger and the others make room;
   letting go rebuilds the video in the new order, with the
   timeline opening back out around the dropped wave so it stays where the

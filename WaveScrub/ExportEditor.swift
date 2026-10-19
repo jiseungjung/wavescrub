@@ -70,7 +70,7 @@ struct ExportEditor: View {
         var x: CGFloat
         /// How far the row of tiles is moved over so the held wave's own
         /// tile starts under the finger.
-        let shift: CGFloat
+        var shift: CGFloat
     }
 
     /// A handle being held. The timeline stays as it was when it was taken
@@ -283,6 +283,9 @@ struct ExportEditor: View {
                     .onTapGesture { selected = nil }
                 if let moving {
                     reorderRow(moving, width: width)
+                        .onReceive(Timer.publish(every: 1.0 / 60, on: .main, in: .common).autoconnect()) { _ in
+                            scrollRow(width: width)
+                        }
                 } else {
                 ForEach(items, id: \.clip.id) { item in
                     let x = origin + CGFloat(item.left) * pps
@@ -413,7 +416,7 @@ struct ExportEditor: View {
 
     /// How wide each wave's tile is while reordering: all of them fit.
     private func tileSize(_ width: CGFloat) -> CGFloat {
-        min(56, max(26, (width - 32) / CGFloat(max(1, clips.count)) - 6))
+        52
     }
 
     private func rowLeft(_ width: CGFloat) -> CGFloat {
@@ -502,6 +505,21 @@ struct ExportEditor: View {
             }
     }
 
+    /// The held wave near either edge of the screen scrolls the row that
+    /// way, faster the closer it is, until its last tile is in view.
+    private func scrollRow(width: CGFloat) {
+        guard let moving else { return }
+        let tile = tileSize(width)
+        let left = rowLeft(width) + moving.shift
+        let right = left + CGFloat(clips.count) * (tile + 6) - 6
+        let zone: CGFloat = 50
+        if moving.x < zone, left < 12 {
+            self.moving?.shift += min(12 - left, 8 * (zone - moving.x) / zone)
+        } else if moving.x > width - zone, right > width - 12 {
+            self.moving?.shift -= min(right - (width - 12), 8 * (moving.x - (width - zone)) / zone)
+        }
+    }
+
     /// Lifts the wave under the finger, with its tile right there.
     private func pickUp(at point: CGPoint, origin: CGFloat, width: CGFloat) {
         guard moving == nil, trim == nil, scrubFrom == nil, pinchBase == nil, clips.count > 1 else { return }
@@ -512,11 +530,10 @@ struct ExportEditor: View {
         preview.pause()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         let tile = tileSize(width)
-        let row = CGFloat(clips.count) * (tile + 6) - 6
         let left = rowLeft(width)
-        // The held tile's slot under the finger, as far as the row stays on screen.
-        let wanted = point.x - (left + CGFloat(i) * (tile + 6) + tile / 2)
-        let shift = min(max(wanted, 8 - left), max(8 - left, width - 8 - row - left))
+        // The held wave stays where it was pressed; the others line up on
+        // either side of it, off the screen if need be.
+        let shift = point.x - (left + CGFloat(i) * (tile + 6) + tile / 2)
         withAnimation(.easeOut(duration: 0.18)) {
             moving = MoveDrag(id: held.id, x: pressAt.x, shift: shift)
         }
