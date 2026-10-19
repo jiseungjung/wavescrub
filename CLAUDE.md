@@ -51,8 +51,7 @@ and report the result in plain language.
   holding it near a screen edge scrolls the row.
   It follows the finger and the others make room;
   letting go rebuilds the video in the new order, with the
-  timeline opening back out around the dropped wave so it stays where the
-  finger left it (no jump to the middle line). The order is kept when
+  playhead at the start of the moved wave (owner's choice, like CapCut). The order is kept when
   going back to choose more waves (new ones go after, in time order). Top bar: back, "N waves" + length, speed, Export.
 - Trims never change the loop. They're kept while going back to choose
   more waves, and reset when export mode is left.
