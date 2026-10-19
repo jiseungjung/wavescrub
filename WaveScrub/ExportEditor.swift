@@ -41,6 +41,9 @@ struct ExportEditor: View {
     /// Where the timeline was when a finger started sliding it.
     @State private var scrubFrom: Double?
     @State private var trim: TrimDrag?
+    /// Each change made in the editor, to undo, and those undone, to redo.
+    @State private var undos: [Snapshot] = []
+    @State private var redos: [Snapshot] = []
     /// A wave held and being dragged to a new place in the order.
     @State private var moving: MoveDrag?
     /// Waits for a finger held still on a wave, to pick it up.
@@ -78,7 +81,14 @@ struct ExportEditor: View {
     /// A handle being held. The timeline stays as it was when it was taken
     /// hold of, so the handle stays under the finger; the waves close up
     /// when it's let go.
+    /// The waves and the speed, as they were before a change.
+    private struct Snapshot {
+        let clips: [EditClip]
+        let rate: Float
+    }
+
     private struct TrimDrag {
+        let before: Snapshot
         let id: EditClip.ID
         let edge: Edge
         let start: Double
@@ -166,6 +176,7 @@ struct ExportEditor: View {
                 }
                 Spacer()
                 Button {
+                    record(snapshot)
                     rate = rate == 1 ? 0.5 : rate == 0.5 ? 0.25 : 1
                 } label: {
                     Text(rate == 1 ? "1×" : rate == 0.5 ? "½×" : "¼×")
@@ -205,10 +216,15 @@ struct ExportEditor: View {
 
     private var playRow: some View {
         HStack {
-            Text(clock(preview.time))
-                .foregroundStyle(.white)
-            Text("/ " + clock(totalLength))
-                .foregroundStyle(.white.opacity(0.5))
+            HStack(spacing: 4) {
+                Text(clock(preview.time))
+                    .foregroundStyle(.white)
+                Text("/ " + clock(totalLength))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(width: 110, alignment: .leading)
             Spacer()
             Button { preview.toggle() } label: {
                 Image(systemName: preview.playing ? "pause.fill" : "play.fill")
@@ -217,8 +233,21 @@ struct ExportEditor: View {
             }
             .foregroundStyle(.white)
             Spacer()
-            // Balances the time on the left so play sits in the middle.
-            Text(clock(totalLength) + " / " + clock(totalLength)).hidden()
+            // As wide as the time on the left, so play sits in the middle.
+            HStack(spacing: 18) {
+                Spacer(minLength: 0)
+                Button(action: undo) {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(undos.isEmpty || trim != nil || moving != nil)
+                Button(action: redo) {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .disabled(redos.isEmpty || trim != nil || moving != nil)
+            }
+            .font(.title3)
+            .foregroundStyle(.white)
+            .frame(width: 110)
         }
         .font(.footnote.monospacedDigit())
         .padding(.horizontal, 16)
@@ -235,12 +264,6 @@ struct ExportEditor: View {
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer()
-                Button {
-                    resetSelected()
-                } label: {
-                    Label("Whole loop", systemImage: "arrow.counterclockwise")
-                }
-                .disabled(c.start == c.loop.lowerBound && c.end == c.loop.upperBound)
                 Button(role: .destructive) {
                     removeSelected()
                 } label: {
@@ -581,6 +604,7 @@ struct ExportEditor: View {
             return
         }
         let to = target(moving, width: width)
+        if from != to { record(snapshot) }
         let clip = clips.remove(at: from)
         clips.insert(clip, at: to)
         self.moving = nil
@@ -599,7 +623,7 @@ struct ExportEditor: View {
         guard let i = clips.firstIndex(where: { $0.id == id }) else { return }
         if trim == nil {
             let lefts = Dictionary(uniqueKeysWithValues: layout.map { ($0.clip.id, $0.left) })
-            trim = TrimDrag(id: id, edge: edge, start: clips[i].start, end: clips[i].end,
+            trim = TrimDrag(before: snapshot, id: id, edge: edge, start: clips[i].start, end: clips[i].end,
                             lefts: lefts, time: preview.time)
             preview.pause()
             showWhole(clips[i])
@@ -638,19 +662,54 @@ struct ExportEditor: View {
     private func letGo() {
         guard let trim else { return }
         self.trim = nil
+        if let c = clips.first(where: { $0.id == trim.id }), c.start != trim.start || c.end != trim.end {
+            record(trim.before)
+        }
         guard let item = layout.first(where: { $0.clip.id == trim.id }) else { return }
         rebuild(at: trim.edge == .start ? item.left : max(item.left, item.right - 0.05))
     }
 
-    private func resetSelected() {
-        guard let i = clips.firstIndex(where: { $0.id == selected }) else { return }
-        clips[i].start = clips[i].loop.lowerBound
-        clips[i].end = clips[i].loop.upperBound
-        rebuild(at: layout[i].left)
+    // MARK: Undo
+
+    private var snapshot: Snapshot { Snapshot(clips: clips, rate: rate) }
+
+    /// Keeps how things were before a change; a new change can't be redone past.
+    private func record(_ before: Snapshot) {
+        undos.append(before)
+        if undos.count > 100 { undos.removeFirst() }
+        redos = []
+    }
+
+    private func undo() {
+        guard let last = undos.popLast() else { return }
+        redos.append(snapshot)
+        restore(last)
+    }
+
+    private func redo() {
+        guard let next = redos.popLast() else { return }
+        undos.append(snapshot)
+        restore(next)
+    }
+
+    /// Puts the waves and speed back, staying at about the same moment.
+    private func restore(_ state: Snapshot) {
+        preview.pause()
+        let speedChanged = state.rate != rate
+        clips = state.clips
+        if !clips.contains(where: { $0.id == selected }) { selected = nil }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if speedChanged {
+            // Changing the speed puts the video together again itself.
+            rate = state.rate
+        } else {
+            rebuild(at: min(preview.time, max(0, totalLength - 0.01)))
+        }
     }
 
     private func removeSelected() {
         guard let i = clips.firstIndex(where: { $0.id == selected }) else { return }
+        record(snapshot)
         clips.remove(at: i)
         selected = nil
         if clips.isEmpty {

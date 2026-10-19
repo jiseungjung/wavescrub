@@ -42,8 +42,10 @@ and report the result in plain language.
   a white playhead in the middle: slide it to move through the whole video,
   pinch to zoom it. Tap a wave to select it: yellow handles trim it, only
   within its loop; while a handle moves the video shows that frame, and the
-  waves close up on letting go. A selected wave can be put back to its
-  whole loop or removed. Hold a wave and drag to reorder it (added
+  waves close up on letting go. A selected wave can be removed (no reset
+  button: the owner wanted undo instead). Undo / redo sit right of play
+  (added 2026-10-19): every trim, reorder, removal and speed change can be
+  undone and redone, up to 100 steps, while the editor is open. Hold a wave and drag to reorder it (added
   2026-10-19, like InShot / CapCut): held still for a moment, it lifts
   without needing to move (a tap of haptics), and the timeline turns into
   one square tile per wave. The held wave stays exactly where it was
