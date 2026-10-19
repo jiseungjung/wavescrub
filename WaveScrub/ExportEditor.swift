@@ -255,7 +255,7 @@ struct ExportEditor: View {
     }
 
     /// Trimming the wave under the playhead to it, as in Premiere; then the
-    /// selected wave and removing it, or a hint.
+    /// selected wave and removing it.
     private var clipBar: some View {
         HStack(spacing: 8) {
             cutButton("Start here", icon: "arrow.right.to.line", edge: .start)
@@ -273,11 +273,6 @@ struct ExportEditor: View {
                     Image(systemName: "trash").imageScale(.large)
                 }
                 .padding(.leading, 4)
-            } else {
-                Text(moving == nil ? "Hold to reorder" : "Drag to a new place")
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.5))
-                    .lineLimit(1)
             }
         }
         .foregroundStyle(.white)
@@ -286,12 +281,12 @@ struct ExportEditor: View {
 
     private func cutButton(_ title: String, icon: String, edge: Edge) -> some View {
         Button { cut(edge) } label: {
-            Label(title, systemImage: icon)
-                .font(.footnote.weight(.semibold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .frame(width: 40, height: 34)
                 .background(Color.white.opacity(0.14), in: Capsule())
         }
+        .accessibilityLabel(title)
         .disabled(cutPoint(edge) == nil || trim != nil || moving != nil)
     }
 
