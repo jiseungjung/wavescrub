@@ -686,6 +686,36 @@ final class PlayerModel: ObservableObject {
         }
     }
 
+    /// Follows the surfer past a wave's loop, for a part of it stretched
+    /// into in the export editor. The loop stays where it was: one going by
+    /// the path's own ends is pinned there first. Returns the path, longer
+    /// where the surfer could be followed.
+    func followForExport(_ id: Wave.ID, to range: ClosedRange<Double>) async -> WaveTrack? {
+        guard let asset, let i = waves.firstIndex(where: { $0.id == id }), let track = tracks[id] else { return nil }
+        if waves[i].clipStart == nil || waves[i].clipEnd == nil {
+            let clip = waves[i].clip(track)
+            waves[i].clipStart = clip.lowerBound
+            waves[i].clipEnd = clip.upperBound
+            saveWaves()
+        }
+        var longer = track
+        if range.lowerBound < track.start - 0.05,
+           let back = try? await WaveTracker.extendBack(longer, asset: asset, to: range.lowerBound) {
+            longer = back
+        }
+        if range.upperBound > longer.end + 0.05,
+           let on = try? await WaveTracker.extendForward(longer, asset: asset, to: range.upperBound) {
+            longer = on
+        }
+        // Tracked again by a tap meanwhile: that path stands.
+        guard tracks[id] == track else { return tracks[id] }
+        if longer != track {
+            tracks[id] = longer
+            saveTracks()
+        }
+        return longer
+    }
+
     private func finishExtending(_ id: Wave.ID, run: UUID, from old: WaveTrack, to longer: WaveTrack?) {
         guard run == trackingRun else { return }
         trackingTask = nil

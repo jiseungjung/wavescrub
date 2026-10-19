@@ -172,9 +172,11 @@ struct WaveLoopView: View {
                     clips: editClips,
                     shown: ClipExport.shown(span: span, screen: viewSize, picture: model.videoSize),
                     rate: $rate,
-                    title: model.title
+                    title: model.title,
+                    duration: model.duration,
+                    follow: { id, range in await model.followForExport(id, to: range) }
                 ) { clips, exported in
-                    for c in clips { exportCuts[c.id] = ExportCut(start: c.start, end: c.end) }
+                    for c in clips { exportCuts[c.id] = ExportCut(start: c.start, end: c.end, zoom: c.zoom) }
                     chosen = Set(clips.map(\.id))
                     exportOrder = clips.map(\.id)
                     if exported { setExporting(false) }
@@ -620,10 +622,12 @@ struct WaveLoopView: View {
             guard let track = model.tracks[w.id] else { return nil }
             let clip = w.clip(track)
             let cut = exportCuts[w.id]
-            let start = min(max(cut?.start ?? clip.lowerBound, clip.lowerBound), clip.upperBound - 0.5)
-            let end = max(min(cut?.end ?? clip.upperBound, clip.upperBound), start + 0.5)
-            return EditClip(id: w.id, title: w.title, color: w.color.color, loop: clip,
-                            track: track, start: start, end: end)
+            // Trims may reach past the loop, as far as the video goes.
+            let start = min(max(cut?.start ?? clip.lowerBound, 0), max(0, model.duration - 0.5))
+            let end = max(min(cut?.end ?? clip.upperBound, max(model.duration, clip.upperBound)), start + 0.5)
+            return EditClip(id: w.id, title: w.title, color: w.color.color,
+                            loop: min(clip.lowerBound, start)...max(clip.upperBound, end),
+                            track: track, start: start, end: end, zoom: cut?.zoom ?? 1)
         }
     }
 
@@ -1516,6 +1520,7 @@ struct SharedFile: Identifiable {
 struct ExportCut: Equatable {
     var start: Double
     var end: Double
+    var zoom: CGFloat = 1
 }
 
 /// The system share sheet: AirDrop, Messages, Instagram, Save to Files…

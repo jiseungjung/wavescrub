@@ -15,6 +15,9 @@ enum ClipExport {
         let start: Double
         let end: Double
         let track: WaveTrack
+        /// How much closer than the video's zoom this wave is: 2 shows half as
+        /// much. Every wave comes out the same size.
+        var zoom: CGFloat = 1
     }
 
     enum Failure: LocalizedError {
@@ -109,7 +112,8 @@ enum ClipExport {
                 return request.finish(with: image, context: nil)
             }
             let time = cut.from + (t - cut.at)
-            let rect = FollowView(track: cut.piece.track, shownW: shown.w, shownH: shown.h).rect(at: time)
+            let z = max(cut.piece.zoom, 0.01)
+            let rect = FollowView(track: cut.piece.track, shownW: shown.w / z, shownH: shown.h / z).rect(at: time)
             let x = image.extent.minX, y = image.extent.minY
             let w = image.extent.width, h = image.extent.height
             // Core Image measures from the bottom-left.

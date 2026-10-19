@@ -2,30 +2,40 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-/// One chosen wave in the export editor: how far its loop goes, and the part
-/// of it that goes in the export.
+/// One chosen wave in the export editor: the part of it that goes in the
+/// export, and how close it's zoomed.
 struct EditClip: Identifiable, Equatable {
     let id: Wave.ID
     let title: String
     let color: Color
-    let loop: ClosedRange<Double>
-    let track: WaveTrack
+    /// The part of the video got ready for this wave: its loop, and any part
+    /// it's been stretched into since.
+    var loop: ClosedRange<Double>
+    var track: WaveTrack
     var start: Double
     var end: Double
+    /// How much closer than the video's zoom: 2 shows half as much.
+    var zoom: CGFloat = 1
 }
 
 /// Putting the chosen waves together before exporting, like InShot or Edits:
 /// the finished video plays at the top, exactly as it will be exported, and
 /// every wave lies along a timeline under it. Slide the timeline to move
 /// through the whole video, pinch it to see more or less. Tap a wave to
-/// trim it with the handles at its ends, only as far as its loop goes;
-/// while a handle moves the video shows that frame.
+/// trim it with the handles at its ends, past its loop if wanted (the surfer
+/// is then followed into the new part); while a handle moves the video shows
+/// that frame. Pinch the video to zoom the wave under the playhead.
 struct ExportEditor: View {
     let asset: AVAsset
     let orientation: CGImagePropertyOrientation
     let shown: (w: CGFloat, h: CGFloat)
     @Binding var rate: Float
     let title: String
+    /// How long the whole video is.
+    let duration: Double
+    /// Follows the surfer through more of a wave, for a part it's been
+    /// stretched into; the path that came of it.
+    var follow: (Wave.ID, ClosedRange<Double>) async -> WaveTrack?
     /// The waves as they were left, and whether the video was exported.
     var onClose: ([EditClip], Bool) -> Void
 
@@ -56,6 +66,10 @@ struct ExportEditor: View {
     @State private var exportError: String?
     @State private var finished: SharedFile?
     @State private var shared: SharedFile?
+    /// Waves whose surfer is being followed into a part stretched into.
+    @State private var following: Set<EditClip.ID> = []
+    /// Two fingers zooming the video, for the wave under the playhead.
+    @State private var zoomPinch: ZoomPinch?
 
     private static let clipHeight: CGFloat = 60
     private static let tileWidth: CGFloat = 40
@@ -66,6 +80,17 @@ struct ExportEditor: View {
     private static let previewWidth: CGFloat = 720
 
     private enum Edge { case start, end }
+
+    private struct ZoomPinch {
+        let id: EditClip.ID
+        let base: CGFloat
+        var scale: CGFloat
+    }
+
+    /// How far past what's ready a handle can go in one go.
+    private static let reach = 15.0
+    /// The closest a wave can be zoomed, past the video's zoom.
+    private static let mostZoom: CGFloat = 6
 
     /// Holding a wave turns the timeline into one tile per wave, to drag
     /// it to a new place, as in InShot or CapCut.
@@ -98,13 +123,16 @@ struct ExportEditor: View {
     }
 
     init(asset: AVAsset, orientation: CGImagePropertyOrientation, clips: [EditClip],
-         shown: (w: CGFloat, h: CGFloat), rate: Binding<Float>, title: String,
+         shown: (w: CGFloat, h: CGFloat), rate: Binding<Float>, title: String, duration: Double,
+         follow: @escaping (Wave.ID, ClosedRange<Double>) async -> WaveTrack?,
          onClose: @escaping ([EditClip], Bool) -> Void) {
         self.asset = asset
         self.orientation = orientation
         self.shown = shown
         _rate = rate
         self.title = title
+        self.duration = duration
+        self.follow = follow
         self.onClose = onClose
         _clips = State(initialValue: clips)
     }
@@ -132,15 +160,17 @@ struct ExportEditor: View {
         .onAppear {
             rebuild(at: 0, play: true)
             // The wave the video starts on first, then the rest in order.
-            frames.start(asset: asset, clips: clips.map { EditorFrames.Clip(id: $0.id, loop: $0.loop, track: $0.track) },
-                         shown: shown, orientation: orientation)
+            frames.setUp(asset: asset, orientation: orientation)
+            for c in clips {
+                frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: false)
+            }
         }
         .onDisappear {
             exportJob?.cancel()
             preview.stop()
             frames.cancel()
         }
-        .task { await makeThumbs() }
+        .task { await makeThumbs(clips) }
         .onChange(of: rate) { old, new in
             rebuild(at: preview.time * Double(old / max(0.05, new)))
         }
@@ -206,12 +236,35 @@ struct ExportEditor: View {
                     Image(decorative: still, scale: 1).resizable().scaledToFill()
                 }
             }
+            // While pinching, the picture grows or shrinks; the wave is cut
+            // again at its new zoom when the fingers lift.
+            .scaleEffect(zoomPinch.map { clampZoom($0.base * $0.scale) / $0.base } ?? 1)
             .aspectRatio(preview.aspect, contentMode: .fit)
+            .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(alignment: .top) {
+                if let zoomPinch {
+                    badge(String(format: "%.1f×", clampZoom(zoomPinch.base * zoomPinch.scale)))
+                } else if !following.isEmpty {
+                    badge("Following the surfer…")
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 16)
             .contentShape(Rectangle())
             .onTapGesture { preview.toggle() }
+            .simultaneousGesture(zoomGesture)
+    }
+
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(.black.opacity(0.6), in: Capsule())
+            .padding(.top, 10)
+            .allowsHitTesting(false)
     }
 
     private var playRow: some View {
@@ -672,24 +725,26 @@ struct ExportEditor: View {
         guard let trim else { return }
         let c = clips[i]
         let moved = Double(dx / pps) * Double(max(0.05, rate))
+        let whole = stretch(of: c)
         if edge == .start {
-            clips[i].start = min(max(c.loop.lowerBound, trim.start + moved), c.end - Self.shortest)
+            clips[i].start = min(max(whole.lowerBound, trim.start + moved), c.end - Self.shortest)
             showFrame(c.id, at: clips[i].start)
-            preview.seekLoose(clips[i].start - c.loop.lowerBound, speed: rate)
+            preview.seekLoose(clips[i].start - whole.lowerBound, speed: rate)
         } else {
-            clips[i].end = max(min(c.loop.upperBound, trim.end + moved), c.start + Self.shortest)
+            clips[i].end = max(min(whole.upperBound, trim.end + moved), c.start + Self.shortest)
             showFrame(c.id, at: clips[i].end)
-            preview.seekLoose(clips[i].end - c.loop.lowerBound, speed: rate)
+            preview.seekLoose(clips[i].end - whole.lowerBound, speed: rate)
         }
     }
 
-    /// While a handle moves, the video shows that wave's whole loop, so any
-    /// frame of it can be shown, not only the part already in.
+    /// While a handle moves, the video shows all of that wave a handle can
+    /// reach, so any frame of it can be shown, not only the part already in.
     private func showWhole(_ c: EditClip) {
         buildRun += 1
         let run = buildRun
         preview.awaitWhole()
-        let piece = ClipExport.Piece(start: c.loop.lowerBound, end: c.loop.upperBound, track: c.track)
+        let whole = stretch(of: c)
+        let piece = ClipExport.Piece(start: whole.lowerBound, end: whole.upperBound, track: c.track, zoom: c.zoom)
         Task {
             guard let built = try? await ClipExport.build(asset: asset, orientation: orientation, pieces: [piece],
                                                           shown: shown, rate: rate, width: Self.previewWidth),
@@ -708,6 +763,97 @@ struct ExportEditor: View {
         }
         guard let item = layout.first(where: { $0.clip.id == trim.id }) else { return }
         rebuild(at: trim.edge == .start ? item.left : max(item.left, item.right - 0.05))
+        followIfStretched(trim.id)
+    }
+
+    /// How far a wave's handles go: some way past what's ready, as far as the
+    /// video goes.
+    private func stretch(of c: EditClip) -> ClosedRange<Double> {
+        max(0, c.loop.lowerBound - Self.reach)...min(max(duration, c.loop.upperBound), c.loop.upperBound + Self.reach)
+    }
+
+    /// A wave stretched past what's ready: the surfer is followed into the
+    /// new part, and its frames got ready. The loop itself stays as it was.
+    private func followIfStretched(_ id: EditClip.ID) {
+        guard let c = clips.first(where: { $0.id == id }),
+              c.start < c.loop.lowerBound - 0.02 || c.end > c.loop.upperBound + 0.02 else { return }
+        let wanted = min(c.start, c.loop.lowerBound)...max(c.end, c.loop.upperBound)
+        following.insert(id)
+        Task {
+            let track = await follow(id, wanted) ?? c.track
+            following.remove(id)
+            guard let now = clips.first(where: { $0.id == id }) else { return }
+            let old = now.loop
+            let loop = min(old.lowerBound, wanted.lowerBound)...max(old.upperBound, wanted.upperBound)
+            // Undoing keeps the longer path too: it's the same surfer.
+            func adopt(_ list: [EditClip]) -> [EditClip] {
+                list.map { c in
+                    guard c.id == id else { return c }
+                    var c = c
+                    c.track = track
+                    c.loop = min(c.loop.lowerBound, loop.lowerBound)...max(c.loop.upperBound, loop.upperBound)
+                    return c
+                }
+            }
+            clips = adopt(clips)
+            undos = undos.map { Snapshot(clips: adopt($0.clips), rate: $0.rate) }
+            redos = redos.map { Snapshot(clips: adopt($0.clips), rate: $0.rate) }
+            guard let c = clips.first(where: { $0.id == id }) else { return }
+            if loop.lowerBound < old.lowerBound {
+                frames.want(id, range: loop.lowerBound...old.lowerBound, track: track, shown: view(of: c), fresh: false)
+            }
+            if loop.upperBound > old.upperBound {
+                frames.want(id, range: old.upperBound...loop.upperBound, track: track, shown: view(of: c), fresh: false)
+            }
+            Task { await makeThumbs([c]) }
+            if trim == nil, moving == nil { rebuild(at: preview.time) }
+        }
+    }
+
+    // MARK: Zooming
+
+    /// What a wave shows of the picture at its zoom.
+    private func view(of c: EditClip) -> (w: CGFloat, h: CGFloat) {
+        (shown.w / c.zoom, shown.h / c.zoom)
+    }
+
+    /// Out as far as the picture's edge, in as far as `mostZoom`.
+    private func clampZoom(_ z: CGFloat) -> CGFloat {
+        min(max(z, max(shown.w, shown.h)), Self.mostZoom)
+    }
+
+    /// Pinching the video zooms the wave under the playhead, and selects it.
+    private var zoomGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { scale in
+                if zoomPinch == nil {
+                    let t = preview.time
+                    guard trim == nil, moving == nil,
+                          let item = layout.first(where: { t >= $0.left && t < $0.right }) ?? layout.last else { return }
+                    preview.pause()
+                    selected = item.clip.id
+                    zoomPinch = ZoomPinch(id: item.clip.id, base: item.clip.zoom, scale: 1)
+                }
+                zoomPinch?.scale = scale
+            }
+            .onEnded { _ in
+                guard let pinch = zoomPinch else { return }
+                let z = clampZoom(pinch.base * pinch.scale)
+                if let i = clips.firstIndex(where: { $0.id == pinch.id }), abs(z - clips[i].zoom) > 0.01 {
+                    record(snapshot)
+                    clips[i].zoom = z
+                    rezoom(clips[i])
+                }
+                zoomPinch = nil
+            }
+    }
+
+    /// A wave at a new zoom: its frames and its strip are made again.
+    private func rezoom(_ c: EditClip) {
+        frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: true)
+        thumbs[c.id] = nil
+        Task { await makeThumbs([c]) }
+        rebuild(at: preview.time)
     }
 
     // MARK: Undo
@@ -737,7 +883,13 @@ struct ExportEditor: View {
     private func restore(_ state: Snapshot) {
         preview.pause()
         let speedChanged = state.rate != rate
+        let rezoomed = state.clips.filter { c in clips.first(where: { $0.id == c.id }).map { $0.zoom != c.zoom } ?? false }
         clips = state.clips
+        for c in rezoomed {
+            frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: true)
+            thumbs[c.id] = nil
+            Task { await makeThumbs([c]) }
+        }
         if !clips.contains(where: { $0.id == selected }) { selected = nil }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if speedChanged {
@@ -766,7 +918,7 @@ struct ExportEditor: View {
     private func rebuild(at time: Double, play: Bool = false) {
         buildRun += 1
         let run = buildRun
-        let pieces = clips.map { ClipExport.Piece(start: $0.start, end: $0.end, track: $0.track) }
+        let pieces = clips.map { ClipExport.Piece(start: $0.start, end: $0.end, track: $0.track, zoom: $0.zoom) }
         guard !pieces.isEmpty else { return }
         Task {
             guard let built = try? await ClipExport.build(asset: asset, orientation: orientation, pieces: pieces,
@@ -820,28 +972,31 @@ struct ExportEditor: View {
     }
 
     /// A small frame of each wave every half second, cut as it will be
-    /// exported. Every wave gets a rough set first, then the rest.
-    private func makeThumbs() async {
+    /// exported. Every wave gets a rough set first, then the rest. Stops for
+    /// a wave zoomed again meanwhile: it gets a new set.
+    private func makeThumbs(_ clips: [EditClip]) async {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 640, height: 640)
         let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
-        let clips = clips
         for pass in [2.0, 0.5] {
             for c in clips {
                 for t in stride(from: c.loop.lowerBound, through: c.loop.upperBound, by: pass) {
                     guard !Task.isCancelled else { return }
+                    guard self.clips.first(where: { $0.id == c.id })?.zoom == c.zoom else { break }
                     if thumbs[c.id]?.contains(where: { abs($0.time - t) < 0.2 }) == true { continue }
                     guard let made = try? await generator.image(at: CMTime(seconds: t, preferredTimescale: 600))
                     else { continue }
                     let image = made.image
-                    let r = FollowView(track: c.track, shownW: shown.w, shownH: shown.h).rect(at: t)
+                    let v = view(of: c)
+                    let r = FollowView(track: c.track, shownW: v.w, shownH: v.h).rect(at: t)
                     let w = CGFloat(image.width), h = CGFloat(image.height)
                     let crop = CGRect(x: r.minX * w, y: r.minY * h, width: r.width * w, height: r.height * h)
                         .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
                     let piece = crop.isEmpty ? image : (image.cropping(to: crop) ?? image)
+                    guard self.clips.first(where: { $0.id == c.id })?.zoom == c.zoom else { break }
                     thumbs[c.id, default: []].append((t, UIImage(cgImage: piece)))
                 }
             }
@@ -854,7 +1009,7 @@ struct ExportEditor: View {
         guard !clips.isEmpty, exportProgress == nil else { return }
         preview.pause()
         selected = nil
-        let pieces = clips.map { ClipExport.Piece(start: $0.start, end: $0.end, track: $0.track) }
+        let pieces = clips.map { ClipExport.Piece(start: $0.start, end: $0.end, track: $0.track, zoom: $0.zoom) }
         let name = clips.count == 1 ? "\(title) \(clips[0].title)" : "\(title) \(clips.count) waves"
         exportProgress = 0
         exportJob = Task {

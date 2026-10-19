@@ -65,6 +65,15 @@ and report the result in plain language.
   the background, cut as exported and kept small; the sharp frame replaces
   it once the finger lifts. About 2 s per 10 s of video on the Mac; until a
   wave's frames are ready, sliding seeks as before.
+- Trims can reach past the loop (added 2026-10-19), up to 15 s past what's
+  ready per drag, as far as the video goes. On letting go the surfer is
+  followed into the new part ("Following the surfer…" on the video) and its
+  frames got ready; the loop itself is pinned where it was and doesn't move.
+- Each wave has its own zoom (added 2026-10-19): pinch the video to zoom
+  the wave under the playhead (it gets selected; 1.0× = the video's zoom,
+  out to the picture's edge, in to 6×). Still following the surfer; every
+  wave comes out the same 9:16 size. Undoable; kept when going back to
+  choose waves, reset when export mode is left.
 - Trims never change the loop. They're kept while going back to choose
   more waves, and reset when export mode is left.
 - Each wave is exported as on the loop screen: following the surfer, as
