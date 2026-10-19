@@ -260,6 +260,18 @@ struct ExportEditor: View {
         HStack(spacing: 8) {
             cutButton("Start here", icon: "arrow.right.to.line", edge: .start)
             cutButton("End here", icon: "arrow.left.to.line", edge: .end)
+            // Removes the selected wave; there whether one is selected or not,
+            // so the buttons never move.
+            Button(role: .destructive) {
+                removeSelected()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 40, height: 34)
+                    .background(Color.white.opacity(0.14), in: Capsule())
+            }
+            .accessibilityLabel("Remove")
+            .disabled(selected == nil || trim != nil || moving != nil)
             Spacer(minLength: 4)
             if let c = clips.first(where: { $0.id == selected }) {
                 Circle().fill(c.color).frame(width: 8, height: 8)
@@ -267,12 +279,6 @@ struct ExportEditor: View {
                 Text(String(format: "%.1fs", (c.end - c.start) / Double(rate)))
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
-                Button(role: .destructive) {
-                    removeSelected()
-                } label: {
-                    Image(systemName: "trash").imageScale(.large)
-                }
-                .padding(.leading, 4)
             }
         }
         .foregroundStyle(.white)

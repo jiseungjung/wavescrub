@@ -42,7 +42,8 @@ and report the result in plain language.
   a white playhead in the middle: slide it to move through the whole video,
   pinch to zoom it. Tap a wave to select it: yellow handles trim it, only
   within its loop; while a handle moves the video shows that frame, and the
-  waves close up on letting go. "Start here" / "End here" (icon-only buttons, added 2026-10-19,
+  waves close up on letting go. "Start here" / "End here" (icon-only buttons at the bottom left,
+  with the trash can beside them; added 2026-10-19,
   like Premiere's trim to playhead) cut the wave under the playhead to it,
   selected or not; greyed out if it would leave under half a second. A
   selected wave can be removed (no reset
