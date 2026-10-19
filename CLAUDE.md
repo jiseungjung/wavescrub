@@ -39,7 +39,21 @@ and report the result in plain language.
   as the picture instead (no black bars).
 - Several waves are stitched in time order with straight cuts. Exported at
   the speed being watched, with sound, no labels.
-- Saved into a "WaveScrub" album in Photos, then the share sheet opens.
+- Each checked wave has its own export start and end (added 2026-10-19), on
+  a strip under the video that only reaches as far as its loop. They start
+  as the whole loop each time export opens and never change the loop. While
+  a handle moves, the video shows that frame followed and cut; letting go
+  plays that part (near the end, for the end handle). "Play all" plays every
+  checked wave's part in turn, as the export will be; "Total" shows its
+  length at the export speed. Unchecked waves loop as usual.
+- In export mode the parts above and below the 9:16 frame are dimmed, so
+  what you see between the lines is what gets exported. Tap the video to
+  hide the bars and see the whole frame.
+- Saved straight into a "WaveScrub" album in Photos, then a "Saved to
+  Photos" card with Done and Share, like CapCut / InShot. The share sheet
+  only opens on Share, and leaves out "Save Video" (it's already saved, and
+  tapping it made a second copy). If saving failed, the card says so and
+  the share sheet keeps "Save Video".
 
 ## Planned: tagging several surfers in one video
 

@@ -42,7 +42,19 @@ struct WaveLoopView: View {
     @State private var exportProgress: Double?
     @State private var exportError: String?
     @State private var shared: SharedFile?
-    /// A word that fades after a moment, like "Saved to Photos".
+    /// Where each chosen wave starts and ends in the export, inside its loop.
+    /// Starts as the whole loop each time export opens.
+    @State private var exportCuts: [Wave.ID: ExportCut] = [:]
+    /// Playing every chosen wave one after the other, as the export will be.
+    @State private var playingAll = false
+    /// A handle on the export strip is held: the whole loop is ready to show
+    /// any frame of it.
+    @State private var exportDragging = false
+    @State private var lastMoved: Double = 0
+    @State private var clockMemo = ClockMemo()
+    /// The export just made, saved or not, with the choice to share it.
+    @State private var finished: SharedFile?
+    /// A word that fades after a moment.
     @State private var note: String?
     /// How big the video is on screen, for exports as wide as what you see.
     @State private var viewSize: CGSize = .zero
@@ -75,6 +87,9 @@ struct WaveLoopView: View {
                 onZoom: { model.loopSpan = $0 }
             )
             .ignoresSafeArea()
+            .overlay {
+                if let band = exportBand { exportFrame(band) }
+            }
             .background {
                 GeometryReader { geo in
                     Color.clear
@@ -90,6 +105,8 @@ struct WaveLoopView: View {
                     noWaves
                 } else if let exportProgress {
                     exportingCard(exportProgress)
+                } else if let finished {
+                    finishedCard(finished)
                 } else if let status {
                     statusLabel(status)
                 } else if let note {
@@ -149,6 +166,8 @@ struct WaveLoopView: View {
         .onChange(of: model.openedCount) {
             exportJob?.cancel()
             exporting = false
+            playingAll = false
+            finished = nil
             trimming = false
             chosen = []
             onlySurfer = nil
@@ -162,8 +181,12 @@ struct WaveLoopView: View {
             }
         }
         .onChange(of: rate) { loop.rate = rate }
-        .sheet(item: $shared, onDismiss: { loop.play() }) { file in
-            ShareSheet(items: [file.url])
+        .onReceive(loop.clock.$time) { advancePlayAll($0) }
+        // Checking or unchecking the wave being watched: its loop or its export part.
+        .onChange(of: chosen) { if !exportDragging { refresh() } }
+        // Already in Photos: the share sheet doesn't offer to save it again.
+        .sheet(item: $shared) { file in
+            ShareSheet(items: [file.url], excluded: file.saved ? [.saveToCameraRoll] : [])
                 .presentationDetents([.medium, .large])
         }
         .alert("Couldn't export", isPresented: Binding(
@@ -382,6 +405,8 @@ struct WaveLoopView: View {
                     .padding(.top, 10)
                     .padding(.bottom, 14)
                 }
+            } else if exporting, let wave, let track, chosen.contains(wave.id), let asset = model.asset {
+                exportTrim(wave, track, asset)
             } else if picking, let wave {
                 pickTimeBar(wave)
             } else if wave != nil {
@@ -574,6 +599,154 @@ struct WaveLoopView: View {
         .padding(.horizontal, 16)
     }
 
+    /// The chosen wave's start and end in the export, on its own strip: only
+    /// as far as its loop goes. Moving a handle shows that frame, followed and
+    /// cut as it will be; letting go plays the wave as it will be exported.
+    private func exportTrim(_ wave: Wave, _ track: WaveTrack, _ asset: AVAsset) -> some View {
+        let clip = wave.clip(track)
+        let cut = exportCut(wave, track)
+        let several = chosen.count > 1
+        return VStack(spacing: 2) {
+            ExportPlayRow(loop: loop, clock: loop.clock, several: several, playingAll: playingAll,
+                          total: totalLength) {
+                if playingAll { playingAll = false } else { playAll() }
+            }
+            TrimStrip(asset: asset, duration: model.duration,
+                      start: Binding(get: { cut.start }, set: { exportCuts[wave.id] = ExportCut(start: $0, end: exportCut(wave, track).end) }),
+                      end: Binding(get: { cut.end }, set: { exportCuts[wave.id] = ExportCut(start: exportCut(wave, track).start, end: $0) }),
+                      limit: clip.lowerBound...clip.upperBound,
+                      onMove: { t in
+                          playingAll = false
+                          exportDragging = true
+                          lastMoved = t
+                          loop.loop(asset, from: clip.lowerBound, to: clip.upperBound, followed: true, at: t, playing: false)
+                      },
+                      onRelease: {
+                          exportDragging = false
+                          let cut = exportCut(wave, track)
+                          // Let go of the end: play up to it, rather than the whole wave.
+                          let from = abs(lastMoved - cut.end) < 0.01 ? max(cut.start, cut.end - 1.5) : cut.start
+                          loop.loop(asset, from: cut.start, to: cut.end, followed: true, at: from)
+                      })
+            .id(wave.id)
+            .padding(.bottom, 8)
+        }
+    }
+
+    /// The part of a wave that goes in the export: its loop, unless moved.
+    private func exportCut(_ wave: Wave, _ track: WaveTrack) -> ExportCut {
+        let clip = wave.clip(track)
+        let cut = exportCuts[wave.id] ?? ExportCut(start: clip.lowerBound, end: clip.upperBound)
+        let start = min(max(cut.start, clip.lowerBound), clip.upperBound - 0.5)
+        return ExportCut(start: start, end: max(min(cut.end, clip.upperBound), start + 0.5))
+    }
+
+    /// The chosen waves, in the order they'll be in the export.
+    private var chosenWaves: [Wave] {
+        model.waves.filter { chosen.contains($0.id) && model.tracks[$0.id] != nil }.sorted { $0.time < $1.time }
+    }
+
+    /// How long the export will be, at the speed it's made at.
+    private var totalLength: Double {
+        chosenWaves.reduce(0) { sum, w in
+            guard let track = model.tracks[w.id] else { return sum }
+            let cut = exportCut(w, track)
+            return sum + (cut.end - cut.start)
+        } / Double(max(0.05, rate))
+    }
+
+    /// From the first chosen wave, each in turn, back to the first after the last.
+    private func playAll() {
+        guard let first = chosenWaves.first else { return }
+        playingAll = true
+        if waveID == first.id, let asset = model.asset, let track = model.tracks[first.id] {
+            let cut = exportCut(first, track)
+            loop.loop(asset, from: cut.start, to: cut.end, followed: true, at: cut.start)
+            loop.play()
+        } else {
+            waveID = first.id
+        }
+    }
+
+    /// At the end of a wave's part, on to the next chosen wave.
+    private func advancePlayAll(_ t: Double) {
+        let before = clockMemo.time
+        clockMemo.time = t
+        guard exporting, playingAll, !exportDragging, let wave, let track, chosen.contains(wave.id) else { return }
+        let cut = exportCut(wave, track)
+        // Only once the loop is this wave's part, not the one before's.
+        guard abs(loop.clock.start - cut.start) < 0.02, abs(loop.clock.end - cut.end) < 0.02 else { return }
+        let wrapped = t < before - 0.3 && before > cut.end - 0.4
+        guard wrapped || t >= cut.end - 0.04 else { return }
+        let order = chosenWaves
+        guard order.count > 1, let i = order.firstIndex(where: { $0.id == wave.id }) else { return }
+        waveID = order[(i + 1) % order.count].id
+    }
+
+    /// How tall the exported picture is on screen, while choosing waves to
+    /// export: the rest above and below is cut off, and shown dimmed.
+    private var exportBand: CGFloat? {
+        guard exporting, !picking, track != nil, viewSize.width > 0, viewSize.height > 0,
+              model.videoSize.width > 0, model.videoSize.height > 0 else { return nil }
+        let shown = ClipExport.shown(span: span, screen: viewSize, picture: model.videoSize)
+        let aspect = model.videoSize.width / model.videoSize.height
+        let shownH = min(CGFloat(span), max(1, aspect * viewSize.height / viewSize.width))
+        return min(viewSize.height, shown.h / shownH * viewSize.height)
+    }
+
+    private func exportFrame(_ band: CGFloat) -> some View {
+        GeometryReader { geo in
+            let off = max(0, (geo.size.height - band) / 2)
+            VStack(spacing: 0) {
+                Rectangle().fill(.black.opacity(0.55)).frame(height: off)
+                    .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.6)).frame(height: 1) }
+                Color.clear
+                Rectangle().fill(.black.opacity(0.55)).frame(height: off)
+                    .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.6)).frame(height: 1) }
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
+
+    /// Done exporting: it's in Photos already, so the only thing left to
+    /// offer is sharing it somewhere else.
+    private func finishedCard(_ file: SharedFile) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: file.saved ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 40))
+                .foregroundStyle(file.saved ? .green : .yellow)
+            Text(file.saved ? "Saved to Photos" : "Couldn't save to Photos")
+                .font(.headline)
+            Text(file.saved ? "In the WaveScrub album" : "Let WaveScrub add to Photos in Settings, or share it from here.")
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                Button("Done") {
+                    withAnimation { finished = nil }
+                    loop.play()
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                Button { shared = file } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.body.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.yellow)
+                .foregroundStyle(.black)
+            }
+            .padding(.top, 6)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: 280)
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .transition(.opacity)
+    }
+
     private func exportingCard(_ progress: Double) -> some View {
         VStack(spacing: 12) {
             ProgressView(value: progress)
@@ -606,10 +779,15 @@ struct WaveLoopView: View {
             exporting = on
             chosen = on ? Set([waveID].compactMap { $0 }.filter { model.tracks[$0] != nil }) : []
         }
+        exportCuts = [:]
+        playingAll = false
+        exportDragging = false
+        refresh()
     }
 
     /// While exporting, a tap chooses the wave (or lets it go), and plays it.
     private func tapWave(_ w: Wave) {
+        playingAll = false
         if exporting, model.tracks[w.id] != nil {
             if chosen.contains(w.id) { chosen.remove(w.id) } else { chosen.insert(w.id) }
         }
@@ -618,11 +796,11 @@ struct WaveLoopView: View {
 
     private func startExport() {
         guard let asset = model.asset else { return }
-        let waves = model.waves.filter { chosen.contains($0.id) }.sorted { $0.time < $1.time }
+        let waves = chosenWaves
         let pieces = waves.compactMap { w in
             model.tracks[w.id].map { track in
-                let clip = w.clip(track)
-                return ClipExport.Piece(start: clip.lowerBound, end: clip.upperBound, track: track)
+                let cut = exportCut(w, track)
+                return ClipExport.Piece(start: cut.start, end: cut.end, track: track)
             }
         }
         guard !pieces.isEmpty else { return }
@@ -630,6 +808,7 @@ struct WaveLoopView: View {
         let name = waves.count == 1 ? "\(model.title) \(waves[0].title)" : "\(model.title) \(waves.count) waves"
         let orientation = model.videoOrientation
         let rate = rate
+        playingAll = false
         loop.pause()
         exportProgress = 0
         exportJob = Task {
@@ -642,8 +821,8 @@ struct WaveLoopView: View {
                                                       shown: shown, rate: rate, name: name) { exportProgress = $0 }
                 let saved = (try? await ClipExport.saveToPhotos(url)) != nil
                 setExporting(false)
-                if saved { show(note: "Saved to Photos") }
-                shared = SharedFile(url: url)
+                loop.pause()
+                withAnimation { finished = SharedFile(url: url, saved: saved) }
             } catch is CancellationError {
                 loop.play()
             } catch {
@@ -662,6 +841,7 @@ struct WaveLoopView: View {
     // MARK: Actions
 
     private func step(_ by: Int) {
+        playingAll = false
         let waves = shownWaves
         guard let i = waves.firstIndex(where: { $0.id == waveID }) else { return }
         let next = i + by
@@ -710,6 +890,12 @@ struct WaveLoopView: View {
         } else if picking {
             loop.still(asset, at: pickTime)
         } else if let track {
+            // A wave chosen for export plays only the part that goes in it.
+            if exporting, chosen.contains(wave.id) {
+                let cut = exportCut(wave, track)
+                loop.loop(asset, from: cut.start, to: cut.end, followed: true)
+                return
+            }
             let clip = wave.clip(track)
             loop.loop(asset, from: clip.lowerBound, to: clip.upperBound, followed: true)
         } else {
@@ -1324,8 +1510,11 @@ struct TrimStrip: View {
     let duration: Double
     @Binding var start: Double
     @Binding var end: Double
+    /// When set, the handles stay inside it and the strip shows just it.
+    var limit: ClosedRange<Double>? = nil
     /// The moment to show while a handle moves.
     var onMove: (Double) -> Void
+    var onRelease: () -> Void = {}
 
     /// The stretch of the video the strip shows.
     @State private var lo: Double?
@@ -1363,6 +1552,11 @@ struct TrimStrip: View {
         }
         .onAppear {
             guard lo == nil else { return }
+            if let limit {
+                lo = limit.lowerBound
+                hi = limit.upperBound
+                return
+            }
             lo = max(0, start - Self.pad)
             hi = min(duration, end + Self.pad)
         }
@@ -1452,7 +1646,10 @@ struct TrimStrip: View {
                         fingerX = value.location.x
                         follow()
                     }
-                    .onEnded { _ in held = nil }
+                    .onEnded { _ in
+                        held = nil
+                        onRelease()
+                    }
             )
     }
 
@@ -1466,11 +1663,12 @@ struct TrimStrip: View {
     private func follow() {
         guard let held else { return }
         let middle = fingerX - grab
+        let first = limit?.lowerBound ?? 0, last = limit?.upperBound ?? duration
         if held == .start {
-            start = min(max(0, time(middle + Self.handle / 2)), end - Self.shortest)
+            start = min(max(first, time(middle + Self.handle / 2)), end - Self.shortest)
             onMove(start)
         } else {
-            end = max(min(duration, time(middle - Self.handle / 2)), start + Self.shortest)
+            end = max(min(last, time(middle - Self.handle / 2)), start + Self.shortest)
             onMove(end)
         }
     }
@@ -1478,7 +1676,7 @@ struct TrimStrip: View {
     /// A handle held against an end of the strip brings in more of the video
     /// that way, faster the further in and the longer it's held.
     private func bringInMore() {
-        guard held != nil, let lo else { return }
+        guard held != nil, limit == nil, let lo else { return }
         let heldFor = Date().timeIntervalSince(heldSince)
         let speed = 3 * (1 + min(heldFor, 10) / 2)
         let left = (Self.edgeZone - fingerX) / Self.edgeZone
@@ -1524,18 +1722,73 @@ struct TrimStrip: View {
     }
 }
 
-/// A finished export, for the share sheet.
+/// A finished export, and whether it made it into Photos.
 struct SharedFile: Identifiable {
     let url: URL
+    var saved = false
     var id: URL { url }
+}
+
+/// Where a wave starts and ends in an export.
+struct ExportCut: Equatable {
+    var start: Double
+    var end: Double
+}
+
+/// The loop's last moment, kept without redrawing the screen each frame.
+final class ClockMemo {
+    var time: Double = 0
+}
+
+/// Above the export strip: play or pause, and playing every chosen wave in
+/// turn, with how long the export will be.
+struct ExportPlayRow: View {
+    let loop: LoopPlayer
+    @ObservedObject var clock: LoopClock
+    let several: Bool
+    let playingAll: Bool
+    let total: Double
+    var onPlayAll: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Button {
+                clock.playing ? loop.pause() : loop.play()
+            } label: {
+                Image(systemName: clock.playing ? "pause.fill" : "play.fill")
+                    .frame(width: 20)
+            }
+            if several {
+                Button(action: onPlayAll) {
+                    Label(playingAll ? "Playing all" : "Play all",
+                          systemImage: playingAll ? "stop.fill" : "play.square.stack")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(playingAll ? Color.yellow : Color.white.opacity(0.16), in: Capsule())
+                        .foregroundStyle(playingAll ? .black : .white)
+                }
+            }
+            Spacer()
+            Text(String(format: "Total %.1fs", total))
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
 }
 
 /// The system share sheet: AirDrop, Messages, Instagram, Save to Files…
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
+    var excluded: [UIActivity.ActivityType] = []
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        controller.excludedActivityTypes = excluded
+        return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
