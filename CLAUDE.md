@@ -48,7 +48,9 @@ and report the result in plain language.
   without needing to move (a tap of haptics), and the timeline turns into
   one square tile per wave, lined up so the held one is under the finger.
   It follows the finger and the others make room;
-  letting go rebuilds the video in the new order. The order is kept when
+  letting go rebuilds the video in the new order, with the
+  timeline opening back out around the dropped wave so it stays where the
+  finger left it (no jump to the middle line). The order is kept when
   going back to choose more waves (new ones go after, in time order). Top bar: back, "N waves" + length, speed, Export.
 - Trims never change the loop. They're kept while going back to choose
   more waves, and reset when export mode is left.

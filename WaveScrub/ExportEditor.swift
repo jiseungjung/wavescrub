@@ -533,7 +533,14 @@ struct ExportEditor: View {
         self.moving = nil
         selected = nil
         if from != to { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-        rebuild(at: layout[to].left + 0.01)
+        // The timeline opens back out around the wave just dropped, so it
+        // stays under the finger and the others close up around it. The
+        // video goes to where the middle line now falls.
+        let item = layout[to]
+        let middle = (item.left + item.right) / 2 + Double((width / 2 - moving.x) / pps)
+        let now = min(max(0, middle), max(0, totalLength - 0.01))
+        preview.seek(now)
+        rebuild(at: now)
     }
 
     // MARK: Trimming
