@@ -59,6 +59,14 @@ and report the result in plain language.
   letting go rebuilds the video in the new order, with the
   playhead at the start of the moved wave (owner's choice, like CapCut). The order is kept when
   going back to choose more waves (new ones go after, in time order). Top bar: back, "N waves" + length, speed, Export.
+- The editor's video plays like the loop screen (rebuilt 2026-10-19 after
+  zoom lagged): the original footage, each frame cut around the surfer as
+  it's drawn, at that wave's zoom, so pinch-zoom is instant. While a handle
+  moves it plays the original video itself, reaching past what's in.
+  Exports still go through the export's own rendering.
+- Trimming keeps waves flush: an end handle pushes the later waves along; a
+  start handle stays under the finger with the earlier waves moving with
+  it. Letting go leaves the timeline exactly where it is.
 - Sliding the timeline or moving a trim handle shows frames got ready in
   advance (added 2026-10-19: seeking the video itself trailed the finger).
   When the editor opens, every frame of each wave's loop is decoded once in

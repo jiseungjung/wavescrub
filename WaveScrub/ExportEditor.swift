@@ -118,7 +118,6 @@ struct ExportEditor: View {
         let edge: Edge
         let start: Double
         let end: Double
-        let lefts: [EditClip.ID: Double]
         let time: Double
     }
 
@@ -160,6 +159,7 @@ struct ExportEditor: View {
         .onAppear {
             rebuild(at: 0, play: true)
             // The wave the video starts on first, then the rest in order.
+            preview.configure(shown: shown, orientation: orientation)
             frames.setUp(asset: asset, orientation: orientation)
             for c in clips {
                 frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: false)
@@ -229,16 +229,13 @@ struct ExportEditor: View {
 
     /// The finished video, framed as it will be.
     private var previewArea: some View {
-        EditorPictureView(player: preview.player)
+        EditorVideoView(player: preview)
             .overlay {
                 // While sliding: the frame got ready, until the video catches up.
                 if let still = preview.still {
                     Image(decorative: still, scale: 1).resizable().scaledToFill()
                 }
             }
-            // While pinching, the picture grows or shrinks; the wave is cut
-            // again at its new zoom when the fingers lift.
-            .scaleEffect(zoomPinch.map { clampZoom($0.base * $0.scale) / $0.base } ?? 1)
             .aspectRatio(preview.aspect, contentMode: .fit)
             .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -386,13 +383,6 @@ struct ExportEditor: View {
         var cursor = 0.0
         return clips.map { c in
             let length = (c.end - c.start) / speed
-            if let trim, let frozen = trim.lefts[c.id] {
-                if c.id == trim.id {
-                    let left = frozen + (c.start - trim.start) / speed
-                    return (c, left, left + length)
-                }
-                return (c, frozen, frozen + length)
-            }
             defer { cursor += length }
             return (c, cursor, cursor + length)
         }
@@ -405,7 +395,7 @@ struct ExportEditor: View {
     private var timeline: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let now = trim?.time ?? preview.time
+            let now = trim.map { $0.time - trimShift } ?? preview.time
             let origin = width / 2 - CGFloat(now) * pps
             let items = layout
             ZStack(alignment: .topLeading) {
@@ -517,7 +507,9 @@ struct ExportEditor: View {
             // Easier to catch than it is to see.
             .contentShape(Rectangle().inset(by: -12))
             .highPriorityGesture(
-                DragGesture(minimumDistance: 0)
+                // Measured on the screen, not on the handle: the handle moves
+                // with the finger, and measuring on it fed back as jitter.
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in moveHandle(edge, of: clip.id, by: value.translation.width) }
                     .onEnded { _ in letGo() }
             )
@@ -716,11 +708,10 @@ struct ExportEditor: View {
     private func moveHandle(_ edge: Edge, of id: EditClip.ID, by dx: CGFloat) {
         guard let i = clips.firstIndex(where: { $0.id == id }) else { return }
         if trim == nil {
-            let lefts = Dictionary(uniqueKeysWithValues: layout.map { ($0.clip.id, $0.left) })
             trim = TrimDrag(before: snapshot, id: id, edge: edge, start: clips[i].start, end: clips[i].end,
-                            lefts: lefts, time: preview.time)
+                            time: preview.time)
             preview.pause()
-            showWhole(clips[i])
+            preview.showSource(segment(clips[i]), asset: asset, at: edge == .start ? clips[i].start : clips[i].end)
         }
         guard let trim else { return }
         let c = clips[i]
@@ -729,41 +720,37 @@ struct ExportEditor: View {
         if edge == .start {
             clips[i].start = min(max(whole.lowerBound, trim.start + moved), c.end - Self.shortest)
             showFrame(c.id, at: clips[i].start)
-            preview.seekLoose(clips[i].start - whole.lowerBound, speed: rate)
+            preview.seekSource(clips[i].start)
         } else {
             clips[i].end = max(min(whole.upperBound, trim.end + moved), c.start + Self.shortest)
             showFrame(c.id, at: clips[i].end)
-            preview.seekLoose(clips[i].end - whole.lowerBound, speed: rate)
+            preview.seekSource(clips[i].end)
         }
     }
 
-    /// While a handle moves, the video shows all of that wave a handle can
-    /// reach, so any frame of it can be shown, not only the part already in.
-    private func showWhole(_ c: EditClip) {
-        buildRun += 1
-        let run = buildRun
-        preview.awaitWhole()
-        let whole = stretch(of: c)
-        let piece = ClipExport.Piece(start: whole.lowerBound, end: whole.upperBound, track: c.track, zoom: c.zoom)
-        Task {
-            guard let built = try? await ClipExport.build(asset: asset, orientation: orientation, pieces: [piece],
-                                                          shown: shown, rate: rate, width: Self.previewWidth),
-                  run == buildRun else { return }
-            preview.load(built, at: preview.wantedLoose ?? 0, play: false, keepStill: true)
-        }
-    }
-
-    /// The waves close up, and the video stops at the moment just trimmed:
-    /// a new start, or just before a new end.
+    /// The timeline stays just as it is when the handle is let go: the
+    /// playhead is on whatever's under it now.
     private func letGo() {
         guard let trim else { return }
+        let shift = trimShift
         self.trim = nil
         if let c = clips.first(where: { $0.id == trim.id }), c.start != trim.start || c.end != trim.end {
             record(trim.before)
         }
-        guard let item = layout.first(where: { $0.clip.id == trim.id }) else { return }
-        rebuild(at: trim.edge == .start ? item.left : max(item.left, item.right - 0.05))
+        rebuild(at: min(max(0, trim.time - shift), max(0, totalLength - 0.01)))
         followIfStretched(trim.id)
+    }
+
+    /// While a start handle moves, the timeline moves with it, so the handle
+    /// stays under the finger and the waves before it stay flush; the waves
+    /// after it stay put. In seconds of the finished video.
+    private var trimShift: Double {
+        guard let trim, trim.edge == .start, let c = clips.first(where: { $0.id == trim.id }) else { return 0 }
+        return (c.start - trim.start) / Double(max(0.05, rate))
+    }
+
+    private func segment(_ c: EditClip) -> EditorPlayer.Segment {
+        EditorPlayer.Segment(id: c.id, start: c.start, end: c.end, track: c.track, zoom: c.zoom)
     }
 
     /// How far a wave's handles go: some way past what's ready, as far as the
@@ -831,10 +818,14 @@ struct ExportEditor: View {
                     guard trim == nil, moving == nil,
                           let item = layout.first(where: { t >= $0.left && t < $0.right }) ?? layout.last else { return }
                     preview.pause()
+                    // The frame got ready is cut at the old zoom: the video's
+                    // own frame, cut afresh each moment, shows instead.
+                    preview.showStill(nil)
                     selected = item.clip.id
                     zoomPinch = ZoomPinch(id: item.clip.id, base: item.clip.zoom, scale: 1)
                 }
                 zoomPinch?.scale = scale
+                if let pinch = zoomPinch { preview.setZoom(pinch.id, clampZoom(pinch.base * pinch.scale)) }
             }
             .onEnded { _ in
                 guard let pinch = zoomPinch else { return }
@@ -843,17 +834,20 @@ struct ExportEditor: View {
                     record(snapshot)
                     clips[i].zoom = z
                     rezoom(clips[i])
+                } else {
+                    preview.setZoom(pinch.id, pinch.base)
                 }
                 zoomPinch = nil
             }
     }
 
-    /// A wave at a new zoom: its frames and its strip are made again.
+    /// A wave at a new zoom: the video already cuts it so; its frames for
+    /// sliding and its strip are made again.
     private func rezoom(_ c: EditClip) {
+        preview.setZoom(c.id, c.zoom)
         frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: true)
         thumbs[c.id] = nil
         Task { await makeThumbs([c]) }
-        rebuild(at: preview.time)
     }
 
     // MARK: Undo
@@ -925,7 +919,7 @@ struct ExportEditor: View {
                                                           shown: shown, rate: rate, width: Self.previewWidth),
                   run == buildRun else { return }
             let at = min(max(0, time), max(0, built.duration - 0.01))
-            preview.load(built, at: at, play: play)
+            preview.load(built, segments: clips.map(segment), rate: rate, at: at, play: play)
             if !play { showReady(at: at) }
         }
     }
@@ -1092,159 +1086,5 @@ struct ExportEditor: View {
     private func clock(_ seconds: Double) -> String {
         let s = max(0, seconds)
         return String(format: "%d:%04.1f", Int(s) / 60, s.truncatingRemainder(dividingBy: 60))
-    }
-}
-
-/// Plays the finished video while it's being edited.
-@MainActor
-final class EditorPlayer: ObservableObject {
-    let player = AVPlayer()
-    @Published private(set) var time: Double = 0
-    @Published private(set) var playing = false
-    @Published private(set) var duration: Double = 0
-    /// The picture's width over its height.
-    @Published private(set) var aspect: CGFloat = 9 / 16
-    /// A frame got ready, shown over the video while sliding until the
-    /// video's own sharp one of the same moment is there.
-    @Published private(set) var still: CGImage?
-    /// Where a handle being moved wants the video, in its wave's own seconds,
-    /// for when that wave's whole loop is ready to show.
-    private(set) var wantedLoose: Double?
-    private var timeObserver: Any?
-    private var rateObserver: NSKeyValueObservation?
-    private var endObserver: NSObjectProtocol?
-    private var wanted: CMTime?
-    private var seeking = false
-
-    init() {
-        player.actionAtItemEnd = .pause
-        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] t in
-            MainActor.assumeIsolated {
-                guard let self, !self.seeking, self.wanted == nil, self.player.rate != 0 else { return }
-                self.time = t.seconds
-            }
-        }
-        rateObserver = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
-            let playing = player.timeControlStatus != .paused
-            Task { @MainActor in self?.playing = playing }
-        }
-        endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
-                                                             object: nil, queue: .main) { [weak self] note in
-            MainActor.assumeIsolated {
-                guard let self, (note.object as? AVPlayerItem) === self.player.currentItem else { return }
-                self.time = self.duration
-            }
-        }
-    }
-
-    deinit {
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-    }
-
-    func load(_ built: ClipExport.Built, at time: Double, play: Bool, keepStill: Bool = false) {
-        let item = AVPlayerItem(asset: built.composition)
-        item.videoComposition = built.videoComposition
-        let size = built.videoComposition.renderSize
-        if size.height > 0 { aspect = size.width / size.height }
-        player.replaceCurrentItem(with: item)
-        duration = built.duration
-        wantedLoose = nil
-        if !keepStill { still = nil }
-        seek(time)
-        if play {
-            still = nil
-            player.play()
-        }
-    }
-
-    /// Goes to an exact frame. While a seek is under way only the latest
-    /// wanted frame is kept, so sliding quickly never queues up a backlog.
-    func seek(_ t: Double) {
-        time = t
-        wanted = CMTime(seconds: t, preferredTimescale: 60000)
-        if !seeking { seekToWanted() }
-    }
-
-    /// While sliding: the timeline moves at once, and the picture follows.
-    func slide(to t: Double) {
-        time = t
-    }
-
-    /// The finger lifted: the video goes to that exact frame underneath,
-    /// ready to play from there. The frame got ready stays showing until it
-    /// plays: it's as sharp as the video, and swapping one for the other
-    /// showed as a jump in the picture.
-    func settle() {
-        seek(time)
-    }
-
-    /// While a handle moves: the frame at it, when it's ready.
-    func showStill(_ frame: CGImage?) {
-        still = frame
-    }
-
-    /// While a handle moves: a moment of that wave's whole loop, `offset`
-    /// seconds into it.
-    func seekLoose(_ offset: Double, speed: Float) {
-        wantedLoose = offset / Double(max(0.05, speed))
-        guard let wantedLoose, duration > 0 else { return }
-        wanted = CMTime(seconds: min(wantedLoose, duration - 0.01), preferredTimescale: 60000)
-        if !seeking { seekToWanted() }
-    }
-
-    /// Until the wave's whole loop is ready, handle moves wait for it rather
-    /// than seeking the video as it was.
-    func awaitWhole() {
-        duration = 0
-    }
-
-    private func seekToWanted() {
-        guard let target = wanted, player.currentItem != nil else { return }
-        wanted = nil
-        seeking = true
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.seeking = false
-                if self.wanted != nil { self.seekToWanted() }
-            }
-        }
-    }
-
-    func toggle() {
-        if playing {
-            pause()
-        } else {
-            if time >= duration - 0.05 { seek(0) }
-            still = nil
-            player.play()
-        }
-    }
-
-    func pause() { player.pause() }
-
-    func stop() {
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-    }
-}
-
-/// Shows a player's picture.
-struct EditorPictureView: UIViewRepresentable {
-    let player: AVPlayer
-
-    func makeUIView(context: Context) -> PlayerUIView {
-        let view = PlayerUIView()
-        view.playerLayer.player = player
-        view.playerLayer.videoGravity = .resizeAspect
-        view.backgroundColor = .black
-        return view
-    }
-
-    func updateUIView(_ view: PlayerUIView, context: Context) {}
-
-    final class PlayerUIView: UIView {
-        override class var layerClass: AnyClass { AVPlayerLayer.self }
-        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }

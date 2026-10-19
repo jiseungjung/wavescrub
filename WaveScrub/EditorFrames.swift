@@ -35,11 +35,11 @@ final class EditorFrames: @unchecked Sendable {
 
     /// How wide the kept frames are, in pixels: the same as the editor's
     /// video, so they look no different from it.
-    static let width: CGFloat = 720
+    static let width: CGFloat = EditorVideoUIView.width
     /// At most this many frames a second; more look no smoother while sliding.
     static let rate = 30.0
     /// Stops keeping frames past this, in case of a very long export.
-    static let maxBytes = 350_000_000
+    static let maxBytes = 400_000_000
 
     func setUp(asset: AVAsset, orientation: CGImagePropertyOrientation) {
         lock.lock()
