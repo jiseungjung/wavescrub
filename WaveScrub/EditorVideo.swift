@@ -211,7 +211,7 @@ final class EditorVideoUIView: UIView {
 
     /// Frames are drawn this wide at most: as sharp as the frames got ready
     /// for sliding, so the two look the same.
-    static let width: CGFloat = 810
+    static let width: CGFloat = EditorFrames.width
 
     init(player: EditorPlayer) {
         editor = player

@@ -32,10 +32,15 @@ final class EditorFrames: @unchecked Sendable {
     private var generations: [UUID: Int] = [:]
     private var asset: AVAsset?
     private var orientation = CGImagePropertyOrientation.up
+    /// Where frames are wanted most: the wave and moment being looked at,
+    /// and the waves' order, to go outward from it.
+    private var focus: (id: UUID, time: Double, order: [UUID])?
+    /// Waves are got ready in pieces this long, nearest where you are first.
+    private static let piece = 2.0
 
     /// How wide the kept frames are, in pixels: the same as the editor's
     /// video, so they look no different from it.
-    static let width: CGFloat = EditorVideoUIView.width
+    static let width: CGFloat = 810
     /// At most this many frames a second; more look no smoother while sliding.
     static let rate = 30.0
     /// Stops keeping frames past this, in case of a very long export.
@@ -58,7 +63,13 @@ final class EditorFrames: @unchecked Sendable {
             frames[id] = nil
             jobs.removeAll { $0.id == id }
         }
-        jobs.append(Job(id: id, range: range, track: track, shown: shown, generation: generations[id, default: 0]))
+        // In pieces, so the part near where you are can go first.
+        var from = range.lowerBound
+        while from < range.upperBound - 0.001 {
+            let to = min(range.upperBound, from + Self.piece)
+            jobs.append(Job(id: id, range: from...to, track: track, shown: shown, generation: generations[id, default: 0]))
+            from = to
+        }
         let start = !working
         working = true
         lock.unlock()
@@ -95,10 +106,34 @@ final class EditorFrames: @unchecked Sendable {
                 lock.unlock()
                 return
             }
-            let job = jobs.removeFirst()
+            let job = jobs.remove(at: nextJob())
             lock.unlock()
             decode(asset, track: track, job: job, orientation: orientation, context: context)
         }
+    }
+
+    /// What's being looked at: frames around it are got ready next.
+    func focus(_ id: UUID, at time: Double, order: [UUID]) {
+        lock.lock()
+        focus = (id, time, order)
+        lock.unlock()
+    }
+
+    /// The piece nearest the focus: in the same wave by time, then the
+    /// waves either side, nearest first. Called with the lock held.
+    private func nextJob() -> Int {
+        guard let focus else { return 0 }
+        let here = focus.order.firstIndex(of: focus.id) ?? 0
+        func distance(_ job: Job) -> Double {
+            if job.id == focus.id {
+                return max(0, job.range.lowerBound - focus.time, focus.time - job.range.upperBound)
+            }
+            let there = focus.order.firstIndex(of: job.id) ?? focus.order.count
+            // The next wave's start, or the one before's end, comes first.
+            let into = there > here ? job.range.lowerBound : -job.range.upperBound
+            return 1000 * Double(abs(there - here)) + into / 10
+        }
+        return jobs.indices.min { distance(jobs[$0]) < distance(jobs[$1]) } ?? 0
     }
 
     private func isStale(_ job: Job) -> Bool {

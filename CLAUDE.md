@@ -69,6 +69,9 @@ and report the result in plain language.
   it. Letting go leaves the timeline exactly where it is.
 - Sliding the timeline or moving a trim handle shows frames got ready in
   advance (added 2026-10-19: seeking the video itself trailed the finger).
+  They're made in 2 s pieces, nearest the playhead first (then outward
+  into the neighbouring waves), so a zoomed or newly reached wave is ready
+  where you are within about a second.
   When the editor opens, every frame of each wave's loop is decoded once in
   the background, cut as exported and kept small; the sharp frame replaces
   it once the finger lifts. About 2 s per 10 s of video on the Mac; until a
@@ -91,6 +94,8 @@ and report the result in plain language.
 - Waves are stitched in the editor's order (time order to begin with) with
   straight cuts. Exported at the
   speed chosen, with sound, no labels.
+- Buttons that can't be used (undo / redo, Start here / End here, trash)
+  are dimmed.
 - Saved straight into a "WaveScrub" album in Photos, then a "Saved to
   Photos" card with Done, Share, and Keep editing. The share sheet only
   opens on Share and leaves out "Save Video" (tapping it made a second

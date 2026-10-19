@@ -164,6 +164,7 @@ struct ExportEditor: View {
             for c in clips {
                 frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: false)
             }
+            focusFrames(at: 0)
         }
         .onDisappear {
             exportJob?.cancel()
@@ -289,11 +290,11 @@ struct ExportEditor: View {
                 Button(action: undo) {
                     Image(systemName: "arrow.uturn.backward")
                 }
-                .disabled(undos.isEmpty || trim != nil || moving != nil)
+                .dimmed(undos.isEmpty || trim != nil || moving != nil)
                 Button(action: redo) {
                     Image(systemName: "arrow.uturn.forward")
                 }
-                .disabled(redos.isEmpty || trim != nil || moving != nil)
+                .dimmed(redos.isEmpty || trim != nil || moving != nil)
             }
             .font(.title3)
             .foregroundStyle(.white)
@@ -321,7 +322,7 @@ struct ExportEditor: View {
                     .background(Color.white.opacity(0.14), in: Capsule())
             }
             .accessibilityLabel("Remove")
-            .disabled(selected == nil || trim != nil || moving != nil)
+            .dimmed(selected == nil || trim != nil || moving != nil)
             Spacer(minLength: 4)
             if let c = clips.first(where: { $0.id == selected }) {
                 Circle().fill(c.color).frame(width: 8, height: 8)
@@ -343,7 +344,7 @@ struct ExportEditor: View {
                 .background(Color.white.opacity(0.14), in: Capsule())
         }
         .accessibilityLabel(title)
-        .disabled(cutPoint(edge) == nil || trim != nil || moving != nil)
+        .dimmed(cutPoint(edge) == nil || trim != nil || moving != nil)
     }
 
     /// The wave under the playhead and the moment in it the playhead is at,
@@ -535,7 +536,6 @@ struct ExportEditor: View {
                 if scrubFrom == nil {
                     scrubFrom = preview.time
                     preview.pause()
-                    print(String(format: "WSLAG start after %.0fpt", abs(value.translation.width)))
                 }
                 let t = (scrubFrom ?? 0) - Double(value.translation.width / pps)
                 let now = min(max(0, t), max(0, totalLength - 0.01))
@@ -846,6 +846,7 @@ struct ExportEditor: View {
     private func rezoom(_ c: EditClip) {
         preview.setZoom(c.id, c.zoom)
         frames.want(c.id, range: c.loop, track: c.track, shown: view(of: c), fresh: true)
+        focusFrames(at: preview.time)
         thumbs[c.id] = nil
         Task { await makeThumbs([c]) }
     }
@@ -920,6 +921,7 @@ struct ExportEditor: View {
                   run == buildRun else { return }
             let at = min(max(0, time), max(0, built.duration - 0.01))
             preview.load(built, segments: clips.map(segment), rate: rate, at: at, play: play)
+            focusFrames(at: at)
             if !play { showReady(at: at) }
         }
     }
@@ -943,18 +945,25 @@ struct ExportEditor: View {
         guard let item = items.first(where: { t < $0.right }) ?? items.last else { return }
         let source = min(item.clip.start + (t - item.left) * Double(max(0.05, rate)), item.clip.end)
         preview.slide(to: t)
-        let asked = Date()
+        frames.focus(item.clip.id, at: source, order: clips.map(\.id))
         frames.show(item.clip.id, at: source) { image in
             // Only the latest moment asked for counts.
             guard abs(preview.time - t) < 0.0005, scrubFrom != nil else { return }
-            print(String(format: "WSLAG slide %.2f %@ %.0fms", t, image == nil ? "SEEK" : "frame",
-                         Date().timeIntervalSince(asked) * 1000))
             if let image { preview.showStill(image) } else { preview.seek(t) }
         }
     }
 
+    /// Frames are got ready around a moment of the finished video first.
+    private func focusFrames(at t: Double) {
+        let items = layout
+        guard let item = items.first(where: { t < $0.right }) ?? items.last else { return }
+        let source = min(item.clip.start + (t - item.left) * Double(max(0.05, rate)), item.clip.end)
+        frames.focus(item.clip.id, at: source, order: clips.map(\.id))
+    }
+
     /// While a handle moves: the frame at it, when it's ready.
     private func showFrame(_ id: EditClip.ID, at source: Double) {
+        frames.focus(id, at: source, order: clips.map(\.id))
         frames.show(id, at: source) { image in
             guard trim != nil else { return }
             preview.showStill(image)
@@ -1086,5 +1095,13 @@ struct ExportEditor: View {
     private func clock(_ seconds: Double) -> String {
         let s = max(0, seconds)
         return String(format: "%d:%04.1f", Int(s) / 60, s.truncatingRemainder(dividingBy: 60))
+    }
+}
+
+private extension View {
+    /// Disabled, and looking it: the editor's buttons are drawn white, which
+    /// otherwise hides that they can't be pressed.
+    func dimmed(_ off: Bool) -> some View {
+        disabled(off).opacity(off ? 0.3 : 1)
     }
 }
